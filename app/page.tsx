@@ -52,10 +52,58 @@ const learners = [
 
 export default function Home() {
   const [showHeader, setShowHeader] = useState(true);
+  const [repoInput, setRepoInput] = useState("");
+  const [inputError, setInputError] = useState("");
   const totalFiles = submaps.reduce(
     (count, submap) => count + submap.files.length,
     0
   );
+
+  const handleAnalyze = () => {
+    const value = repoInput.trim();
+
+    if (!value) {
+      setInputError("Enter a GitHub repository link before analyzing.");
+      return;
+    }
+
+    let url: URL;
+
+    try {
+      url = new URL(value);
+    } catch {
+      setInputError("Enter a valid GitHub repository link.");
+      return;
+    }
+
+    if (!["github.com", "www.github.com"].includes(url.hostname)) {
+      setInputError("Only GitHub repository links are supported.");
+      return;
+    }
+
+    const parts = url.pathname.split("/").filter(Boolean);
+
+    if (parts.length < 2) {
+      setInputError("Use a full repository link like github.com/owner/repo.");
+      return;
+    }
+
+    const lastPart = parts[parts.length - 1].toLowerCase();
+    const supportedFileTypes = [".js", ".jsx", ".ts", ".tsx"];
+    const hasFileExtension = lastPart.includes(".");
+    const isSupportedFileType = supportedFileTypes.some((extension) =>
+      lastPart.endsWith(extension)
+    );
+
+    if (hasFileExtension && !isSupportedFileType) {
+      setInputError(
+        "Wrong file type. Use a JavaScript or TypeScript file, or a repository link."
+      );
+      return;
+    }
+
+    setInputError("");
+  };
 
   const handleScroll = useEffectEvent(() => {
     const currentY = window.scrollY;
@@ -122,18 +170,38 @@ export default function Home() {
               Supports JavaScript, TypeScript.
             </p>
 
-            <div className="mt-5 flex w-full max-w-4xl flex-col gap-4 sm:flex-row">
+            <div className="mt-5 w-full max-w-4xl">
+              <div className="flex flex-col gap-4 sm:flex-row">
               <label className="flex min-h-16 flex-1 items-center gap-4 rounded-2xl border-[2px] border-[#B0A695] bg-white px-5 shadow-[6px_6px_0_#000]">
                 <span className="text-2xl text-[#776B5D]">○</span>
                 <input
                   type="text"
+                  value={repoInput}
+                  onChange={(event) => {
+                    setRepoInput(event.target.value);
+                    if (inputError) {
+                      setInputError("");
+                    }
+                  }}
                   placeholder="https://github.com/owner/repo"
                   className="w-full bg-transparent text-xl text-[#433b33] outline-none placeholder:text-[#776B5D]/70"
                 />
               </label>
-              <button className="min-h-16 rounded-2xl border-[2px] border-[#B0A695] bg-[#DDD4C7] px-8 text-xl font-semibold text-[#221d18] shadow-[6px_6px_0_#000] sm:min-w-52">
+              <button
+                type="button"
+                onClick={handleAnalyze}
+                className="min-h-16 rounded-2xl border-[2px] border-[#B0A695] bg-[#DDD4C7] px-8 text-xl font-semibold text-[#221d18] shadow-[6px_6px_0_#000] sm:min-w-52"
+              >
                 Analyze
               </button>
+              </div>
+              <p
+                className={`mt-3 text-left text-sm ${
+                  inputError ? "text-[#b42318]" : "text-transparent"
+                }`}
+              >
+                {inputError || "Validation message placeholder"}
+              </p>
             </div>
 
             <a
