@@ -3,6 +3,7 @@
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { FolderOpen, ChevronRight } from 'lucide-react';
+import { Handle, Position } from "@xyflow/react";
 
 const SUBMAP_COLORS: Record<string, { border: string; glow: string; icon: string; badge: string }> = {
   // login: {
@@ -23,7 +24,7 @@ const DEFAULT_COLOR = {
   border: 'border-black-600', 
   glow: 'shadow-[10px_10px_0_#000]', 
   icon: 'text-400', 
-  badge: 'bg-[#F5EFE6]'
+  badge: 'bg-[#E8DFCA]'
 };
 
 export function SubmapNode({ data }: any) {
@@ -38,7 +39,7 @@ export function SubmapNode({ data }: any) {
       transition={{ duration: 0.35, ease: 'easeOut' }}
       onClick={data.onClick}
       className={cn(
-        "relative rounded-2xl border-2 bg-[#E8DFCA] backdrop-blur-md cursor-pointer",
+        "relative rounded-2xl border-2 bg-[#e8d7ae] backdrop-blur-md cursor-pointer",
         "w-[280px] p-6 select-none transition-all duration-300",
         "hover:scale-[1.03] hover:brightness-110",
         "text-black",
@@ -55,9 +56,20 @@ export function SubmapNode({ data }: any) {
         animate={{ opacity: [0.15, 0.3, 0.15] }}
         transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
       /> */}
+      <Handle
+        type="target"
+        position={Position.Left}
+        className="!bg-black !w-3 !h-3 !border !border-white"
+      />
+
+      <Handle
+        type="source"
+        position={Position.Right}
+        className="!bg-black !w-3 !h-3 !border !border-white"
+      />
 
       <div className="flex items-start justify-between mb-4">
-        <div className={cn("rounded-xl border border-black bg-[#F5EFE6] p-3", colors.icon)}>
+        <div className={cn("rounded-xl border border-black bg-[#E8DFCA] p-3", colors.icon)}>
           <FolderOpen className="h-7 w-7" />
         </div>
         <span className={cn("text-xs text-black font-medium px-2 py-1 rounded-full border border-black", colors.badge)}>
