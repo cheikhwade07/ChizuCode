@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backend.github import cleanup_repo, clone_repo, walk_files
+from backend.services.github import cleanup_repo, clone_repo, walk_files
 
 url = "https://github.com/tiangolo/fastapi"  # or any small public repo
 

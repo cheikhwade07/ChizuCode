@@ -2,8 +2,8 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backend.github import clone_repo, walk_files, cleanup_repo
-from backend.chunker import chunk_files
+from backend.services.github import clone_repo, walk_files, cleanup_repo
+from backend.services.chunker import chunk_files
 
 url = "https://github.com/tiangolo/fastapi"
 repo_path = None
