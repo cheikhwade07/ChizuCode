@@ -19,6 +19,7 @@ import { ArrowLeft, Zap } from 'lucide-react';
 import { SubmapNode } from './SubmapNode';
 import { FileNode } from './FileNode';
 import { AnimatedEdge } from './AnimatedEdge';
+import { ChatInput } from './ChatInput';
 import graphData from '@/test.json';
 
 import dagre from "@dagrejs/dagre";
@@ -311,20 +312,8 @@ function GraphViewerInner() {
         <Controls className="!bottom-6 !right-6 !left-auto !top-auto" />
       </ReactFlow>
 
-      {/* Hint overlay in domain view */}
-      <AnimatePresence>
-        {!activeSubmap && (
-          <motion.p
-            key="hint"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="absolute bottom-6 left-1/2 -translate-x-1/2 text-xs text-slate-500 pointer-events-none"
-          >
-            Click a domain card to explore its files
-          </motion.p>
-        )}
-      </AnimatePresence>
+      {/* Chat input — always visible at the bottom */}
+      <ChatInput onSubmit={(query) => console.log('User query:', query)} />
     </div>
   );
 }
