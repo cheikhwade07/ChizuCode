@@ -246,9 +246,9 @@ function GraphViewerInner() {
 
 
   return (
-    <div className="w-full h-screen bg-slate-950 relative overflow-hidden">
+    <div className="w-full h-screen bg-[#F5EFE6] relative overflow-hidden">
       {/* Top bar */}
-      <div className="absolute top-0 left-0 right-0 z-20 flex items-center gap-3 px-5 py-4 bg-slate-950/80 backdrop-blur border-b border-slate-800">
+      <div className="absolute top-0 left-0 right-0 z-20 flex items-center gap-3 px-5 py-4 bg-[#E8DFCA] backdrop-blur border-b border-slate-800">
         {/* Back button */}
         <AnimatePresence>
           {activeSubmap && (
@@ -259,7 +259,7 @@ function GraphViewerInner() {
               exit={{ opacity: 0, x: -12 }}
               transition={{ duration: 0.2 }}
               onClick={loadDomainView}
-              className="flex items-center gap-1.5 text-slate-400 hover:text-slate-200 transition-colors text-sm font-medium"
+              className="flex items-center gap-1.5 text-black-400 hover:text-blue-400 transition-colors text-sm font-medium"
             >
               <ArrowLeft className="h-4 w-4" />
               All domains
@@ -269,11 +269,11 @@ function GraphViewerInner() {
 
         {/* Breadcrumb */}
         <div className="flex items-center gap-2">
-          <span className="text-slate-100 font-bold text-lg leading-none">Codebase Map</span>
+          <span className="text-black font-bold text-lg leading-none">Codebase Map</span>
           {activeSubmap && (
             <>
               <span className="text-slate-600">/</span>
-              <span className="text-cyan-400 font-semibold capitalize">{activeSubmap}</span>
+              <span className="text-blue-400 font-semibold capitalize">{activeSubmap}</span>
             </>
           )}
         </div>
@@ -303,11 +303,11 @@ function GraphViewerInner() {
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         fitView
-        colorMode="dark"
-        className="pt-16"
+        colorMode="light"
+        className="pt-16 bg-[#F5EFE6]"
         proOptions={{ hideAttribution: true }}
       >
-        <Background gap={20} color="#1e293b" />
+        <Background gap={20} color="#000000" />
         <Controls className="!bottom-6 !right-6 !left-auto !top-auto" />
       </ReactFlow>
 

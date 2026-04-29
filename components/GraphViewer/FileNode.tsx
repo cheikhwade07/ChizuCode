@@ -15,12 +15,12 @@ export function FileNode({ data }: any) {
     <>
       <div
         className={cn(
-          "relative rounded-xl border bg-slate-900/90 backdrop-blur-sm",
+          "relative rounded-xl border bg-[#E8DFCA] backdrop-blur-sm",
           "min-w-[200px] px-4 py-3 cursor-pointer",
           "transition-all duration-500",
           isHighlighted
-            ? "border-cyan-500 shadow-[0_0_24px_rgba(6,182,212,0.7)]"
-            : "border-slate-700 hover:border-slate-500",
+            ? "border-blue-700 shadow-[0_0_24px_rgba(6,182,212,0.7)]"
+            : "border-black-700 hover:border-black-500",
           isFaded ? "opacity-25 grayscale pointer-events-none" : "opacity-100"
         )}
         onClick={() => !isFaded && setPopupOpen((v) => !v)}
@@ -28,7 +28,7 @@ export function FileNode({ data }: any) {
         {/* Pulsing aura when highlighted */}
         {isHighlighted && (
           <motion.div
-            className="absolute -inset-1 rounded-xl bg-gradient-to-r from-cyan-500/60 to-blue-600/60 blur-lg -z-10"
+            className="absolute -inset-1 rounded-xl bg-gradient-to-r from-blue-500/60 to-blue-600/60 blur-lg -z-10"
             animate={{ opacity: [0.3, 0.7, 0.3] }}
             transition={{ duration: 1.8, repeat: Infinity, ease: 'easeInOut' }}
           />
@@ -42,14 +42,14 @@ export function FileNode({ data }: any) {
 
         <div className="flex items-center gap-2.5">
           <div className={cn(
-            "rounded-lg p-2 shrink-0",
-            isHighlighted ? "bg-cyan-500/20 text-cyan-400" : "bg-slate-800 text-slate-400"
+            "rounded-lg p-2 shrink-0 border border-black",
+            isHighlighted ? "bg-blue-500/20 text-blue-400" : "bg-[#F5EFE6] text-black-400"
           )}>
             <FileCode2 className="h-4 w-4" />
           </div>
           <span className={cn(
             "text-sm font-semibold truncate",
-            isHighlighted ? "text-cyan-200" : "text-slate-200"
+            isHighlighted ? "text-blue-400" : "text-black-200"
           )}>
             {data.fileName}
           </span>
@@ -73,7 +73,7 @@ export function FileNode({ data }: any) {
             className={cn(
               "absolute left-1/2 -translate-x-1/2 top-[calc(100%+12px)]",
               "w-[280px] z-[9999]",
-              "rounded-xl border border-slate-600 bg-slate-800/95 shadow-2xl backdrop-blur-md p-4"
+              "rounded-xl border border-slate-600 bg-[#E8DFCA] shadow-2xl backdrop-blur-md p-4"
             )}
             // Stop React Flow from panning when interacting with popup
             onMouseDown={(e) => e.stopPropagation()}
@@ -85,11 +85,11 @@ export function FileNode({ data }: any) {
               <X className="h-4 w-4" />
             </button>
 
-            <p className="text-xs font-semibold text-cyan-400 mb-1 uppercase tracking-wide">Directory</p>
-            <p className="text-sm text-slate-300 font-mono mb-3 break-all">{data.directory}</p>
+            <p className="text-xs font-semibold text-blue-600 mb-1 uppercase tracking-wide">Directory</p>
+            <p className="text-sm text-black-300 font-mono mb-3 break-all">{data.directory}</p>
 
-            <p className="text-xs font-semibold text-cyan-400 mb-1 uppercase tracking-wide">Functionality</p>
-            <p className="text-sm text-slate-300 leading-relaxed">{data.functionality}</p>
+            <p className="text-xs font-semibold text-blue-600 mb-1 uppercase tracking-wide">Functionality</p>
+            <p className="text-sm text-black-300 leading-relaxed">{data.functionality}</p>
           </motion.div>
         )}
       </AnimatePresence>
