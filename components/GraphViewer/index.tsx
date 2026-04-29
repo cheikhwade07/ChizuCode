@@ -33,6 +33,7 @@ interface FileEntry {
 interface Submap {
   name: string;
   files: FileEntry[];
+  dependsOn?: string[];
 }
 
 const nodeTypes = {
@@ -42,6 +43,16 @@ const nodeTypes = {
 
 const edgeTypes = {
   animated: AnimatedEdge,
+};
+
+type GraphTreeNode = {
+  id: string;
+  name: string;
+  type: "domain" | "folder" | "file";
+  children?: GraphTreeNode[];
+  connections?: string[];
+  directory?: string;
+  functionality?: string;
 };
 
 function buildDomainNodes(submaps: Submap[], onClickSubmap: (name: string) => void): Node[] {
@@ -59,6 +70,42 @@ function buildDomainNodes(submaps: Submap[], onClickSubmap: (name: string) => vo
   }));
 }
 
+function buildDomainGraph(
+  submaps,
+  onClickSubmap
+): { nodes: Node[]; edges: Edge[] } {
+
+  const nodes = submaps.map((sm) => ({
+    id: sm.name,
+    type: "submap",
+    position: { x: 0, y: 0 },
+    data: {
+      name: sm.name,
+      fileCount: sm.files.length,
+      onClick: () => onClickSubmap(sm.name),
+    },
+  }));
+
+  const edges: Edge[] = [];
+
+  submaps.forEach((sm) => {
+    sm.dependsOn?.forEach((target) => {
+      edges.push({
+        id: `e-${sm.name}-${target}`,
+        source: sm.name,
+        target,
+        type: "animated",
+      });
+    });
+  });
+
+  return {
+    nodes: applyDagreLayout(nodes, edges, "LR"),
+    edges,
+  };
+}
+
+
 // -- dagre layout for file nodes
 const FILE_NODE_WIDTH = 260;
 const FILE_NODE_HEIGHT = 120;
@@ -74,7 +121,7 @@ function applyDagreLayout(
   dagreGraph.setGraph({
     rankdir: direction,
     nodesep: 100,
-    ranksep: 120,
+    ranksep: 100,
   });
 
   nodes.forEach((node) => {
@@ -96,8 +143,8 @@ function applyDagreLayout(
     return {
       ...node,
       position: {
-        x: pos.x - FILE_NODE_WIDTH / 2,
-        y: pos.y - FILE_NODE_HEIGHT / 2,
+        x: pos.x - FILE_NODE_WIDTH / 2, // + Math.random() * 100,
+        y: pos.y - FILE_NODE_HEIGHT / 2, // + Math.random() * 100,
       },
     };
   });
@@ -148,7 +195,7 @@ function buildSubmapGraph(submap: Submap): { nodes: Node[]; edges: Edge[] } {
     }
   }
 
-  return { nodes: applyDagreLayout(nodes, edges, "LR"), edges };
+  return { nodes: applyDagreLayout(nodes, edges, "TB"), edges };
 }
 
 function GraphViewerInner() {
@@ -164,9 +211,14 @@ function GraphViewerInner() {
   const loadDomainView = useCallback(() => {
     setActiveSubmap(null);
     setIsPlaying(false);
-    const domainNodes = buildDomainNodes(submaps, (name) => loadSubmapView(name));
-    setNodes(domainNodes);
-    setEdges([]);
+    const { nodes, edges } = buildDomainGraph(
+      submaps,
+      (name) => loadSubmapView(name)
+    );
+    console.log("Edges for the domain nodes:");
+    console.log(edges);
+    setNodes(nodes);
+    setEdges(edges);
     setTimeout(() => fitView({ padding: 0.3, duration: 500 }), 50);
   }, [submaps, fitView]);
 
@@ -246,9 +298,9 @@ function GraphViewerInner() {
 
 
   return (
-    <div className="w-full h-screen bg-[#F5EFE6] relative overflow-hidden">
+    <div className="w-full h-screen bg-[#e6d9c5] relative overflow-hidden">
       {/* Top bar */}
-      <div className="absolute top-0 left-0 right-0 z-20 flex items-center gap-3 px-5 py-4 bg-[#E8DFCA] backdrop-blur border-b border-slate-800">
+      <div className="absolute top-0 left-0 right-0 z-20 flex items-center gap-3 px-5 py-4 bg-[#e8d7ae] backdrop-blur border-b border-slate-800">
         {/* Back button */}
         <AnimatePresence>
           {activeSubmap && (
@@ -259,7 +311,7 @@ function GraphViewerInner() {
               exit={{ opacity: 0, x: -12 }}
               transition={{ duration: 0.2 }}
               onClick={loadDomainView}
-              className="flex items-center gap-1.5 text-black-400 hover:text-blue-400 transition-colors text-sm font-medium"
+              className="flex items-center gap-1.5 text-black-400 hover:text-blue-200 transition-colors text-sm font-medium"
             >
               <ArrowLeft className="h-4 w-4" />
               All domains
@@ -273,7 +325,7 @@ function GraphViewerInner() {
           {activeSubmap && (
             <>
               <span className="text-slate-600">/</span>
-              <span className="text-blue-400 font-semibold capitalize">{activeSubmap}</span>
+              <span className="text-black-400 font-semibold capitalize">{activeSubmap}</span>
             </>
           )}
         </div>
@@ -304,7 +356,7 @@ function GraphViewerInner() {
         edgeTypes={edgeTypes}
         fitView
         colorMode="light"
-        className="pt-16 bg-[#F5EFE6]"
+        className="pt-16"
         proOptions={{ hideAttribution: true }}
       >
         <Background gap={20} color="#000000" />

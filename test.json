@@ -33,7 +33,8 @@
           "functionality": "Integrates with external order gateway and executes transactions",
           "connection": ["authController.js", "serviceA.js"]
         }
-      ]
+      ],
+      "dependsOn": []
     },
     {
       "name": "payment",
@@ -50,7 +51,8 @@
           "functionality": "Integrates with external payment gateway and executes transactions",
           "connection": ["paymentController.js", "gatewayClient.js"]
         }
-      ]
+      ],
+      "dependsOn": ["login"]
     },
     {
       "name": "order",
@@ -67,7 +69,8 @@
           "functionality": "Integrates with external order gateway and executes transactions",
           "connection": ["orderController.js", "gatewayClient.js"]
         }
-      ]
+      ],
+      "dependsOn": ["login"]
     }
   ]
 }

@@ -15,11 +15,11 @@ export function FileNode({ data }: any) {
     <>
       <div
         className={cn(
-          "relative rounded-xl border bg-[#E8DFCA] backdrop-blur-sm",
+          "relative rounded-xl border bg-[#e8d7ae] backdrop-blur-sm",
           "min-w-[200px] px-4 py-3 cursor-pointer",
           "transition-all duration-500",
           isHighlighted
-            ? "border-blue-700 shadow-[0_0_24px_rgba(6,182,212,0.7)]"
+            ? "border-blue-700 shadow-[0_0_24px_#e8b874]"
             : "border-black-700 hover:border-black-500",
           isFaded ? "opacity-25 grayscale pointer-events-none" : "opacity-100"
         )}
@@ -43,7 +43,7 @@ export function FileNode({ data }: any) {
         <div className="flex items-center gap-2.5">
           <div className={cn(
             "rounded-lg p-2 shrink-0 border border-black",
-            isHighlighted ? "bg-blue-500/20 text-blue-400" : "bg-[#F5EFE6] text-black-400"
+            isHighlighted ? "bg-blue-500/20 text-blue-400" : "bg-[#E8DFCA] text-black-400"
           )}>
             <FileCode2 className="h-4 w-4" />
           </div>
