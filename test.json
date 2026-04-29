@@ -14,6 +14,24 @@
           "directory": "/src/services/userService.js",
           "functionality": "Fetches user data from database and verifies credentials",
           "connection": ["authController.js", "database.js"]
+        },
+        {
+          "fileName": "serviceA.js",
+          "directory": "/src/services/orderService.js",
+          "functionality": "Integrates with external order gateway and executes transactions",
+          "connection": ["orderController.js", "serviceB.js"]
+        },
+        {
+          "fileName": "serviceB.js",
+          "directory": "/src/services/orderService.js",
+          "functionality": "Integrates with external order gateway and executes transactions",
+          "connection": ["orderController.js", "authController.js"]
+        },
+        {
+          "fileName": "serviceC.js",
+          "directory": "/src/services/orderService.js",
+          "functionality": "Integrates with external order gateway and executes transactions",
+          "connection": ["authController.js", "serviceA.js"]
         }
       ]
     },

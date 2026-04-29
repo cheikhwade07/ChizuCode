@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@dagrejs/dagre": "^3.0.0",
     "@xyflow/react": "^12.10.2",
     "clsx": "^2.1.1",
     "framer-motion": "^12.38.0",

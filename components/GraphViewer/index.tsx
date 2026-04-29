@@ -21,6 +21,8 @@ import { FileNode } from './FileNode';
 import { AnimatedEdge } from './AnimatedEdge';
 import graphData from '@/test.json';
 
+import dagre from "@dagrejs/dagre";
+
 interface FileEntry {
   fileName: string;
   directory: string;
@@ -55,6 +57,50 @@ function buildDomainNodes(submaps: Submap[], onClickSubmap: (name: string) => vo
       onClick: () => onClickSubmap(sm.name),
     },
   }));
+}
+
+// -- dagre layout for file nodes
+const FILE_NODE_WIDTH = 260;
+const FILE_NODE_HEIGHT = 120;
+
+function applyDagreLayout(
+  nodes: Node[],
+  edges: Edge[],
+  direction: "TB" | "LR" = "TB"
+): Node[] {
+  const dagreGraph = new dagre.graphlib.Graph();
+  dagreGraph.setDefaultEdgeLabel(() => ({}));
+
+  dagreGraph.setGraph({
+    rankdir: direction,
+    nodesep: 100,
+    ranksep: 120,
+  });
+
+  nodes.forEach((node) => {
+    dagreGraph.setNode(node.id, {
+      width: FILE_NODE_WIDTH,
+      height: FILE_NODE_HEIGHT,
+    });
+  });
+
+  edges.forEach((edge) => {
+    dagreGraph.setEdge(edge.source, edge.target);
+  });
+
+  dagre.layout(dagreGraph);
+
+  return nodes.map((node) => {
+    const pos = dagreGraph.node(node.id);
+
+    return {
+      ...node,
+      position: {
+        x: pos.x - FILE_NODE_WIDTH / 2,
+        y: pos.y - FILE_NODE_HEIGHT / 2,
+      },
+    };
+  });
 }
 
 function buildSubmapGraph(submap: Submap): { nodes: Node[]; edges: Edge[] } {
@@ -102,9 +148,8 @@ function buildSubmapGraph(submap: Submap): { nodes: Node[]; edges: Edge[] } {
     }
   }
 
-  return { nodes, edges };
+  return { nodes: applyDagreLayout(nodes, edges, "LR"), edges };
 }
-
 
 function GraphViewerInner() {
   const submaps: Submap[] = (graphData as any).submaps;
