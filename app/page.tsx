@@ -43,13 +43,6 @@ const submaps = [
   },
 ];
 
-const teachingPoints = [
-  "Plain-English walkthroughs for each submap",
-  "Connections between files shown as learning steps",
-  "Fast onboarding for unfamiliar modules",
-  "Clear file roles before you open the code",
-];
-
 const learners = [
   "New developers joining a codebase",
   "Students studying project architecture",
@@ -89,84 +82,78 @@ export default function Home() {
   }, []);
 
   return (
-    <main className="min-h-screen bg-[#F5EFE6] text-black">
+    <main className="min-h-screen bg-[#F3EEEA] text-[#433b33]">
       <header
-        className={`fixed inset-x-0 top-0 z-50 bg-[#F5EFE6]/88 backdrop-blur transition-transform duration-300 ${
+        className={`fixed inset-x-0 top-0 z-50 bg-[#F3EEEA]/92 backdrop-blur transition-transform duration-300 ${
           showHeader ? "translate-y-0" : "-translate-y-full"
         }`}
       >
-        <div className="mx-auto flex h-28 w-full max-w-[1600px] items-center justify-between px-6 sm:px-10 lg:px-14">
+        <div className="mx-auto flex h-24 w-full max-w-[1600px] items-center justify-between px-6 sm:px-10 lg:px-14">
           <div className="flex flex-col">
             <span className="text-[2.4rem] font-semibold tracking-[-0.07em] sm:text-[2.7rem]">
               ChizuCode
             </span>
-            <span className="text-sm uppercase tracking-[0.22em] text-black/65">
+            <span className="text-sm uppercase tracking-[0.22em] text-[#776B5D]">
               Codebase Teaching Assistant
             </span>
           </div>
-          <span className="rounded-full border border-black bg-[#F5EFE6] px-4 py-2 text-sm font-medium">
+          <span className="rounded-full border border-[#B0A695] bg-[#DDD4C7] px-4 py-2 text-sm font-medium text-[#221d18] shadow-[6px_6px_0_#000]">
             Teaching Assistant for Repos
           </span>
         </div>
       </header>
 
-      <div className="mx-auto flex w-full max-w-[1600px] flex-col px-6 pb-10 pt-36 sm:px-10 sm:pb-14 sm:pt-40 lg:px-14 lg:pb-14 lg:pt-44">
-        <section className="grid gap-10 border-b border-black pb-12 lg:grid-cols-[1.3fr_0.9fr]">
-          <div className="max-w-5xl">
-            <div className="inline-flex rounded-full border border-black bg-[#CBDCEB] px-4 py-2 text-sm font-medium">
+      <div className="mx-auto flex w-full max-w-[1600px] flex-col px-6 pb-10 pt-28 sm:px-10 sm:pb-14 sm:pt-30 lg:px-14 lg:pb-14 lg:pt-32">
+        <section className="flex min-h-[calc(100vh-8rem)] items-center border-b border-[#B0A695] pb-12">
+          <div className="mx-auto flex max-w-5xl flex-col items-center text-center">
+            <div className="inline-flex rounded-full border border-[#B0A695] bg-[#EBE3D5] px-4 py-2 text-sm font-medium text-[#5e554c]">
               Learn a codebase before reading every file
             </div>
-            <h1 className="mt-6 text-6xl font-semibold tracking-[-0.07em] sm:text-7xl lg:text-[6.3rem]">
-              ChizuCode
-              <br />
-              teaches your
-              <br />
-              codebase back to you.
+            <h1 className="mt-5 max-w-4xl text-5xl font-semibold leading-[0.95] tracking-[-0.07em] text-[#433b33] sm:text-6xl lg:text-[5.4rem]">
+              ChizuCode teaches your codebase back to you.
             </h1>
-            <p className="mt-8 max-w-4xl text-2xl leading-10 text-black/75">
+            <p className="mt-6 max-w-4xl text-xl leading-9 text-[#776B5D] sm:text-2xl">
               Explore repositories through guided submaps, file roles, and
               connection hints. ChizuCode acts like a teaching assistant that
-              explains how a module works before you dive into the implementation.
+              explains how a module works before you dive into the
+              implementation.
             </p>
-            <div className="mt-10 flex flex-col gap-4 sm:flex-row">
-              <a
-                href="#submaps"
-                className="rounded-2xl border-[2px] border-black bg-[#CBDCEB] px-8 py-4 text-xl font-semibold shadow-[6px_6px_0_#000]"
-              >
-                Explore Sample Submaps
-              </a>
-              <a
-                href="#how-it-works"
-                className="rounded-2xl border-[2px] border-black bg-[#E8DFCA] px-8 py-4 text-xl font-semibold shadow-[6px_6px_0_#000]"
-              >
-                How It Teaches
-              </a>
-            </div>
-          </div>
+            <p className="mt-8 text-lg text-[#776B5D] sm:text-xl">
+              Supports JavaScript, TypeScript.
+            </p>
 
-          <div className="rounded-[2rem] border-[2px] border-black bg-[#E8DFCA] p-7 shadow-[10px_10px_0_#000]">
-            <h2 className="text-3xl font-semibold tracking-[-0.04em]">
-              What ChizuCode does
-            </h2>
-            <div className="mt-6 space-y-4">
-              {teachingPoints.map((point) => (
-                <div
-                  key={point}
-                  className="rounded-2xl border border-black bg-[#F5EFE6] px-4 py-4 text-lg"
-                >
-                  {point}
-                </div>
-              ))}
+            <div className="mt-5 flex w-full max-w-4xl flex-col gap-4 sm:flex-row">
+              <label className="flex min-h-16 flex-1 items-center gap-4 rounded-2xl border-[2px] border-[#B0A695] bg-white px-5 shadow-[6px_6px_0_#000]">
+                <span className="text-2xl text-[#776B5D]">○</span>
+                <input
+                  type="text"
+                  placeholder="https://github.com/owner/repo"
+                  className="w-full bg-transparent text-xl text-[#433b33] outline-none placeholder:text-[#776B5D]/70"
+                />
+              </label>
+              <button className="min-h-16 rounded-2xl border-[2px] border-[#B0A695] bg-[#DDD4C7] px-8 text-xl font-semibold text-[#221d18] shadow-[6px_6px_0_#000] sm:min-w-52">
+                Analyze
+              </button>
             </div>
+
+            <a
+              href="#submaps"
+              className="mt-6 inline-flex items-center justify-center rounded-2xl border-[2px] border-[#B0A695] bg-[#DDD4C7] px-8 py-4 text-lg font-semibold text-[#221d18] shadow-[6px_6px_0_#000] sm:text-xl"
+            >
+              Explore more
+            </a>
           </div>
         </section>
 
-        <section className="grid gap-8 py-12 lg:grid-cols-3">
-          <div className="rounded-[1.8rem] border-[2px] border-black bg-[#F5EFE6] p-6 shadow-[8px_8px_0_#000]">
-            <div className="bg-[#CBDCEB] px-4 py-3 font-mono text-[1.35rem]">
+        <section
+          id="overview-cards"
+          className="scroll-mt-52 grid gap-8 pt-28 pb-20 lg:grid-cols-3"
+        >
+          <div className="overflow-hidden rounded-[1.8rem] border-[2px] border-[#B0A695] bg-[#F3EEEA] shadow-[8px_8px_0_#000]">
+            <div className="bg-[#EBE3D5] px-5 py-4 font-mono text-[1.75rem] text-[#433b33]">
               Who it helps
             </div>
-            <div className="mt-5 space-y-3 text-lg text-black/75">
+            <div className="p-6 pt-5 space-y-3 text-lg text-[#776B5D]">
               {learners.map((item) => (
                 <p key={item}>{item}</p>
               ))}
@@ -175,23 +162,23 @@ export default function Home() {
 
           <div
             id="how-it-works"
-            className="rounded-[1.8rem] border-[2px] border-black bg-[#F5EFE6] p-6 shadow-[8px_8px_0_#000]"
+            className="overflow-hidden rounded-[1.8rem] border-[2px] border-[#B0A695] bg-[#F3EEEA] shadow-[8px_8px_0_#000]"
           >
-            <div className="bg-[#E8DFCA] px-4 py-3 font-mono text-[1.35rem]">
+            <div className="bg-[#EBE3D5] px-5 py-4 font-mono text-[1.75rem] text-[#433b33]">
               How it works
             </div>
-            <ol className="mt-5 space-y-4 text-lg text-black/75">
+            <ol className="p-6 pt-5 space-y-4 text-lg text-[#776B5D]">
               <li>1. Break the repo into submaps like login or payment.</li>
-              <li>2. Explain each file’s purpose in plain English.</li>
+              <li>2. Explain each file&apos;s purpose in plain English.</li>
               <li>3. Show connections so learners know what to read next.</li>
             </ol>
           </div>
 
-          <div className="rounded-[1.8rem] border-[2px] border-black bg-[#F5EFE6] p-6 shadow-[8px_8px_0_#000]">
-            <div className="bg-[#CBDCEB] px-4 py-3 font-mono text-[1.35rem]">
+          <div className="overflow-hidden rounded-[1.8rem] border-[2px] border-[#B0A695] bg-[#F3EEEA] shadow-[8px_8px_0_#000]">
+            <div className="bg-[#EBE3D5] px-5 py-4 font-mono text-[1.75rem] text-[#433b33]">
               Current sample
             </div>
-            <div className="mt-5 space-y-3 text-lg text-black/75">
+            <div className="p-6 pt-5 space-y-3 text-lg text-[#776B5D]">
               <p>{submaps.length} submaps loaded</p>
               <p>{totalFiles} files explained</p>
               <p>Connections surfaced for every file</p>
@@ -199,37 +186,38 @@ export default function Home() {
           </div>
         </section>
 
-        <section id="submaps" className="border-t border-black pt-12">
+        <section
+          id="submaps"
+          className="scroll-mt-[42vh] border-t border-[#B0A695] pt-12"
+        >
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div>
-              <h2 className="text-4xl font-semibold tracking-[-0.05em]">
+              <h2 className="text-4xl font-semibold tracking-[-0.05em] text-[#433b33]">
                 Guided submaps
               </h2>
-              <p className="mt-3 text-xl text-black/75">
+              <p className="mt-3 text-xl text-[#776B5D]">
                 Each submap is presented like a lesson: what it is, which files
                 matter, and how they connect.
               </p>
             </div>
             <div className="flex gap-4">
-              <div className="rounded-2xl border-[2px] border-black bg-[#CBDCEB] px-5 py-3 shadow-[6px_6px_0_#000]">
+              <div className="rounded-2xl border-[2px] border-[#B0A695] bg-[#DDD4C7] px-5 py-3 text-[#221d18] shadow-[6px_6px_0_#000]">
                 {submaps.length} maps
               </div>
-              <div className="rounded-2xl border-[2px] border-black bg-[#E8DFCA] px-5 py-3 shadow-[6px_6px_0_#000]">
+              <div className="rounded-2xl border-[2px] border-[#B0A695] bg-[#DDD4C7] px-5 py-3 text-[#221d18] shadow-[6px_6px_0_#000]">
                 {totalFiles} files
               </div>
             </div>
           </div>
 
           <div className="mt-8 grid gap-6 xl:grid-cols-2">
-            {submaps.map((submap, index) => (
+            {submaps.map((submap) => (
               <article
                 key={submap.name}
-                className="overflow-hidden rounded-[1.8rem] border-[2px] border-black bg-[#F5EFE6] shadow-[8px_8px_0_#000]"
+                className="overflow-hidden rounded-[1.8rem] border-[2px] border-[#B0A695] bg-[#F3EEEA] shadow-[8px_8px_0_#000]"
               >
                 <div
-                  className={`px-5 py-4 font-mono text-[1.75rem] capitalize ${
-                    index % 2 === 0 ? "bg-[#CBDCEB]" : "bg-[#E8DFCA]"
-                  }`}
+                  className="bg-[#EBE3D5] px-5 py-4 font-mono text-[1.75rem] capitalize text-[#433b33]"
                 >
                   {submap.name}
                 </div>
@@ -237,27 +225,27 @@ export default function Home() {
                   {submap.files.map((file) => (
                     <div
                       key={file.directory}
-                      className="rounded-2xl border border-black bg-[#E8DFCA] p-5"
+                      className="rounded-2xl border border-[#B0A695] bg-[#EBE3D5] p-5"
                     >
-                      <h3 className="text-[1.65rem] font-semibold leading-tight">
+                      <h3 className="text-[1.65rem] font-semibold leading-tight text-[#433b33]">
                         {file.fileName}
                       </h3>
-                      <p className="mt-2 font-mono text-sm text-black/70">
+                      <p className="mt-2 font-mono text-sm text-[#776B5D]">
                         {file.directory}
                       </p>
-                      <p className="mt-4 text-lg leading-8 text-black/75">
+                      <p className="mt-4 text-lg leading-8 text-[#776B5D]">
                         {file.functionality}
                       </p>
 
                       <div className="mt-4">
-                        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-black/65">
+                        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[#776B5D]">
                           Connected to
                         </p>
                         <div className="mt-3 flex flex-wrap gap-2">
                           {file.connection.map((item) => (
                             <span
                               key={item}
-                              className="rounded-full border border-black bg-[#CBDCEB] px-3 py-1.5 text-sm"
+                              className="rounded-full border border-[#B0A695] bg-[#F3EEEA] px-3 py-1.5 text-sm text-[#433b33]"
                             >
                               {item}
                             </span>
