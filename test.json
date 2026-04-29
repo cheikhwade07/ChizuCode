@@ -33,6 +33,23 @@
           "connection": ["paymentController.js", "gatewayClient.js"]
         }
       ]
+    },
+    {
+      "name": "order",
+      "files": [
+        {
+          "fileName": "orderController.js",
+          "directory": "/src/controllers/orderController.js",
+          "functionality": "Processes order requests and handles order responses",
+          "connection": ["orderService.js", "orderService.js"]
+        },
+        {
+          "fileName": "orderService.js",
+          "directory": "/src/services/orderService.js",
+          "functionality": "Integrates with external order gateway and executes transactions",
+          "connection": ["orderController.js", "gatewayClient.js"]
+        }
+      ]
     }
   ]
 }
