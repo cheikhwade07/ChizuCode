@@ -72,8 +72,8 @@ function buildDomainNodes(submaps: Submap[], onClickSubmap: (name: string) => vo
 }
 
 function buildDomainGraph(
-  submaps,
-  onClickSubmap
+  submaps: Submap[],
+  onClickSubmap: (name: string) => void
 ): { nodes: Node[]; edges: Edge[] } {
 
   const nodes = submaps.map((sm) => ({
