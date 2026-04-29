@@ -55,6 +55,7 @@ async def query_repo_endpoint(repo_id: str, body: QueryRequest):
     Returns answer, confidence level, and source chunks with metadata
     for future graph highlighting.
     """
+    repo_id = repo_id.strip('"')
     if not body.question.strip():
         raise HTTPException(status_code=422, detail="question cannot be empty")
 

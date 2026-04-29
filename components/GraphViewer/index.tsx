@@ -19,9 +19,13 @@ import { ArrowLeft, Zap } from 'lucide-react';
 import { SubmapNode } from './SubmapNode';
 import { FileNode } from './FileNode';
 import { AnimatedEdge } from './AnimatedEdge';
-import graphData from '@/test.json';
+import { fetchGraphData } from './adapter';
 
 import dagre from "@dagrejs/dagre";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 interface FileEntry {
   fileName: string;
@@ -35,16 +39,31 @@ interface Submap {
   files: FileEntry[];
 }
 
+interface GraphData {
+  submaps: Submap[];
+}
+
+// ---------------------------------------------------------------------------
+// Node / Edge types
+// ---------------------------------------------------------------------------
+
 const nodeTypes = {
-  submap:  SubmapNode,
-  file:    FileNode,
+  submap: SubmapNode,
+  file:   FileNode,
 };
 
 const edgeTypes = {
   animated: AnimatedEdge,
 };
 
-function buildDomainNodes(submaps: Submap[], onClickSubmap: (name: string) => void): Node[] {
+// ---------------------------------------------------------------------------
+// Graph builders
+// ---------------------------------------------------------------------------
+
+function buildDomainNodes(
+    submaps: Submap[],
+    onClickSubmap: (name: string) => void
+): Node[] {
   const GAP = 380;
   const startX = (800 - GAP * (submaps.length - 1)) / 2;
   return submaps.map((sm, i) => ({
@@ -59,31 +78,21 @@ function buildDomainNodes(submaps: Submap[], onClickSubmap: (name: string) => vo
   }));
 }
 
-// -- dagre layout for file nodes
-const FILE_NODE_WIDTH = 260;
+const FILE_NODE_WIDTH  = 260;
 const FILE_NODE_HEIGHT = 120;
 
 function applyDagreLayout(
-  nodes: Node[],
-  edges: Edge[],
-  direction: "TB" | "LR" = "TB"
+    nodes: Node[],
+    edges: Edge[],
+    direction: "TB" | "LR" = "TB"
 ): Node[] {
   const dagreGraph = new dagre.graphlib.Graph();
   dagreGraph.setDefaultEdgeLabel(() => ({}));
-
-  dagreGraph.setGraph({
-    rankdir: direction,
-    nodesep: 100,
-    ranksep: 120,
-  });
+  dagreGraph.setGraph({ rankdir: direction, nodesep: 100, ranksep: 120 });
 
   nodes.forEach((node) => {
-    dagreGraph.setNode(node.id, {
-      width: FILE_NODE_WIDTH,
-      height: FILE_NODE_HEIGHT,
-    });
+    dagreGraph.setNode(node.id, { width: FILE_NODE_WIDTH, height: FILE_NODE_HEIGHT });
   });
-
   edges.forEach((edge) => {
     dagreGraph.setEdge(edge.source, edge.target);
   });
@@ -92,7 +101,6 @@ function applyDagreLayout(
 
   return nodes.map((node) => {
     const pos = dagreGraph.node(node.id);
-
     return {
       ...node,
       position: {
@@ -104,46 +112,41 @@ function applyDagreLayout(
 }
 
 function buildSubmapGraph(submap: Submap): { nodes: Node[]; edges: Edge[] } {
-  const files = submap.files;
+  const files     = submap.files;
   const fileNames = new Set(files.map((f) => f.fileName));
 
-  const COLS = Math.ceil(Math.sqrt(files.length + 1));
+  const COLS  = Math.ceil(Math.sqrt(files.length + 1));
   const H_GAP = 290;
   const V_GAP = 180;
 
-  const nodes: Node[] = files.map((file, i) => {
-    const col = i % COLS;
-    const row = Math.floor(i / COLS);
-    return {
-      id: file.fileName,
-      type: 'file',
-      position: { x: col * H_GAP, y: row * V_GAP },
-      data: {
-        fileName: file.fileName,
-        directory: file.directory,
-        functionality: file.functionality,
-        isHighlighted: false,
-        isFaded: false,
-      },
-    };
-  });
+  const nodes: Node[] = files.map((file, i) => ({
+    id:       file.fileName,
+    type:     'file',
+    position: { x: (i % COLS) * H_GAP, y: Math.floor(i / COLS) * V_GAP },
+    data: {
+      fileName:      file.fileName,
+      directory:     file.directory,
+      functionality: file.functionality,
+      isHighlighted: false,
+      isFaded:       false,
+    },
+  }));
 
   const edgeSet = new Set<string>();
   const edges: Edge[] = [];
 
   for (const file of files) {
     for (const conn of file.connection) {
-      if (!fileNames.has(conn)) continue; 
+      if (!fileNames.has(conn)) continue;
       const edgeKey = [file.fileName, conn].sort().join('--');
       if (edgeSet.has(edgeKey)) continue;
       edgeSet.add(edgeKey);
-
       edges.push({
-        id: `e-${file.fileName}-${conn}`,
+        id:     `e-${file.fileName}-${conn}`,
         source: file.fileName,
         target: conn,
-        type: 'animated',
-        data: { isAnimated: false, isFaded: false },
+        type:   'animated',
+        data:   { isAnimated: false, isFaded: false },
       });
     }
   }
@@ -151,15 +154,42 @@ function buildSubmapGraph(submap: Submap): { nodes: Node[]; edges: Edge[] } {
   return { nodes: applyDagreLayout(nodes, edges, "LR"), edges };
 }
 
-function GraphViewerInner() {
-  const submaps: Submap[] = (graphData as any).submaps;
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
 
+function GraphViewerInner() {
+  const [graphData, setGraphData]   = useState<GraphData | null>(null);
+  const [loading, setLoading]       = useState(true);
+  const [error, setError]           = useState<string | null>(null);
   const [activeSubmap, setActiveSubmap] = useState<string | null>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
+  const [isPlaying, setIsPlaying]   = useState(false);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const { fitView } = useReactFlow();
+
+  // Load graph data from backend on mount
+  useEffect(() => {
+    const repoId = process.env.NEXT_PUBLIC_REPO_ID;
+    if (!repoId) {
+      setError("NEXT_PUBLIC_REPO_ID is not set");
+      setLoading(false);
+      return;
+    }
+
+    fetchGraphData(repoId)
+        .then((data) => {
+          setGraphData(data);
+          setLoading(false);
+        })
+        .catch((err) => {
+          setError(err.message);
+          setLoading(false);
+        });
+  }, []);
+
+  const submaps = graphData?.submaps ?? [];
 
   const loadDomainView = useCallback(() => {
     setActiveSubmap(null);
@@ -171,24 +201,23 @@ function GraphViewerInner() {
   }, [submaps, fitView]);
 
   const loadSubmapView = useCallback(
-    (name: string) => {
-      setIsPlaying(false);
-      const sm = submaps.find((s) => s.name === name);
-      if (!sm) return;
-      const { nodes: fileNodes, edges: fileEdges } = buildSubmapGraph(sm);
-      setActiveSubmap(name);
-      setNodes(fileNodes);
-      setEdges(fileEdges);
-      setTimeout(() => fitView({ padding: 0.35, duration: 600 }), 50);
-    },
-    [submaps, fitView, setNodes, setEdges]
+      (name: string) => {
+        setIsPlaying(false);
+        const sm = submaps.find((s) => s.name === name);
+        if (!sm) return;
+        const { nodes: fileNodes, edges: fileEdges } = buildSubmapGraph(sm);
+        setActiveSubmap(name);
+        setNodes(fileNodes);
+        setEdges(fileEdges);
+        setTimeout(() => fitView({ padding: 0.35, duration: 600 }), 50);
+      },
+      [submaps, fitView, setNodes, setEdges]
   );
 
+  // Load domain view once graph data is ready
   useEffect(() => {
-    loadDomainView();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
+    if (graphData) loadDomainView();
+  }, [graphData]);
 
   const simulateLogin = () => {
     if (activeSubmap !== 'login') {
@@ -201,140 +230,142 @@ function GraphViewerInner() {
 
   const triggerLoginAnimation = () => {
     setIsPlaying(true);
-
-    const activeFileIds   = ['userService.js', 'authController.js'];
-    const activeEdgeIds   = ['e-authController.js-userService.js', 'e-userService.js-authController.js'];
+    const activeFileIds = ['userService.js', 'authController.js'];
+    const activeEdgeIds = ['e-authController.js-userService.js', 'e-userService.js-authController.js'];
 
     setNodes((nds) =>
-      nds.map((n) => ({
-        ...n,
-        data: {
-          ...n.data,
-          isHighlighted: activeFileIds.includes(n.id),
-          isFaded: !activeFileIds.includes(n.id),
-        },
-      }))
+        nds.map((n) => ({
+          ...n,
+          data: {
+            ...n.data,
+            isHighlighted: activeFileIds.includes(n.id),
+            isFaded:       !activeFileIds.includes(n.id),
+          },
+        }))
     );
-
     setEdges((eds) =>
-      eds.map((e) => ({
-        ...e,
-        data: {
-          ...e.data,
-          isAnimated: activeEdgeIds.includes(e.id),
-          isFaded: !activeEdgeIds.includes(e.id),
-        },
-      }))
+        eds.map((e) => ({
+          ...e,
+          data: {
+            ...e.data,
+            isAnimated: activeEdgeIds.includes(e.id),
+            isFaded:    !activeEdgeIds.includes(e.id),
+          },
+        }))
     );
 
     setTimeout(() => {
       setNodes((nds) =>
-        nds.map((n) => ({
-          ...n,
-          data: { ...n.data, isHighlighted: false, isFaded: false },
-        }))
+          nds.map((n) => ({ ...n, data: { ...n.data, isHighlighted: false, isFaded: false } }))
       );
       setEdges((eds) =>
-        eds.map((e) => ({
-          ...e,
-          data: { ...e.data, isAnimated: false, isFaded: false },
-        }))
+          eds.map((e) => ({ ...e, data: { ...e.data, isAnimated: false, isFaded: false } }))
       );
       setIsPlaying(false);
     }, 6000);
   };
 
+  // Loading state
+  if (loading) {
+    return (
+        <div className="w-full h-screen bg-[#F5EFE6] flex items-center justify-center">
+          <p className="text-slate-600 text-lg animate-pulse">Loading codebase map…</p>
+        </div>
+    );
+  }
+
+  // Error state
+  if (error) {
+    return (
+        <div className="w-full h-screen bg-[#F5EFE6] flex items-center justify-center">
+          <p className="text-red-500 text-lg">Error: {error}</p>
+        </div>
+    );
+  }
 
   return (
-    <div className="w-full h-screen bg-[#F5EFE6] relative overflow-hidden">
-      {/* Top bar */}
-      <div className="absolute top-0 left-0 right-0 z-20 flex items-center gap-3 px-5 py-4 bg-[#E8DFCA] backdrop-blur border-b border-slate-800">
-        {/* Back button */}
-        <AnimatePresence>
-          {activeSubmap && (
-            <motion.button
-              key="back"
-              initial={{ opacity: 0, x: -12 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -12 }}
-              transition={{ duration: 0.2 }}
-              onClick={loadDomainView}
-              className="flex items-center gap-1.5 text-black-400 hover:text-blue-400 transition-colors text-sm font-medium"
-            >
-              <ArrowLeft className="h-4 w-4" />
-              All domains
-            </motion.button>
-          )}
-        </AnimatePresence>
+      <div className="w-full h-screen bg-[#F5EFE6] relative overflow-hidden">
+        {/* Top bar */}
+        <div className="absolute top-0 left-0 right-0 z-20 flex items-center gap-3 px-5 py-4 bg-[#E8DFCA] backdrop-blur border-b border-slate-800">
+          <AnimatePresence>
+            {activeSubmap && (
+                <motion.button
+                    key="back"
+                    initial={{ opacity: 0, x: -12 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -12 }}
+                    transition={{ duration: 0.2 }}
+                    onClick={loadDomainView}
+                    className="flex items-center gap-1.5 text-black-400 hover:text-blue-400 transition-colors text-sm font-medium"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                  All domains
+                </motion.button>
+            )}
+          </AnimatePresence>
 
-        {/* Breadcrumb */}
-        <div className="flex items-center gap-2">
-          <span className="text-black font-bold text-lg leading-none">Codebase Map</span>
-          {activeSubmap && (
-            <>
-              <span className="text-slate-600">/</span>
-              <span className="text-blue-400 font-semibold capitalize">{activeSubmap}</span>
-            </>
-          )}
+          <div className="flex items-center gap-2">
+            <span className="text-black font-bold text-lg leading-none">Codebase Map</span>
+            {activeSubmap && (
+                <>
+                  <span className="text-slate-600">/</span>
+                  <span className="text-blue-400 font-semibold capitalize">{activeSubmap}</span>
+                </>
+            )}
+          </div>
+
+          <div className="flex-1" />
+
+          <motion.button
+              whileHover={{ scale: 1.04 }}
+              whileTap={{ scale: 0.97 }}
+              onClick={simulateLogin}
+              disabled={isPlaying}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-700 disabled:cursor-not-allowed text-white text-sm font-semibold shadow-lg transition-colors"
+          >
+            <Zap className="h-4 w-4" />
+            {isPlaying ? 'Simulating login…' : 'Simulate Login Flow'}
+          </motion.button>
         </div>
 
-        {/* Spacer */}
-        <div className="flex-1" />
-
-        {/* Simulate button */}
-        <motion.button
-          whileHover={{ scale: 1.04 }}
-          whileTap={{ scale: 0.97 }}
-          onClick={simulateLogin}
-          disabled={isPlaying}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-700 disabled:cursor-not-allowed text-white text-sm font-semibold shadow-lg transition-colors"
+        {/* Canvas */}
+        <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
+            fitView
+            colorMode="light"
+            className="pt-16 bg-[#F5EFE6]"
+            proOptions={{ hideAttribution: true }}
         >
-          <Zap className="h-4 w-4" />
-          {isPlaying ? 'Simulating login…' : 'Simulate Login Flow'}
-        </motion.button>
+          <Background gap={20} color="#000000" />
+          <Controls className="!bottom-6 !right-6 !left-auto !top-auto" />
+        </ReactFlow>
+
+        <AnimatePresence>
+          {!activeSubmap && (
+              <motion.p
+                  key="hint"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="absolute bottom-6 left-1/2 -translate-x-1/2 text-xs text-slate-500 pointer-events-none"
+              >
+                Click a domain card to explore its files
+              </motion.p>
+          )}
+        </AnimatePresence>
       </div>
-
-      {/* Canvas */}
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        nodeTypes={nodeTypes}
-        edgeTypes={edgeTypes}
-        fitView
-        colorMode="light"
-        className="pt-16 bg-[#F5EFE6]"
-        proOptions={{ hideAttribution: true }}
-      >
-        <Background gap={20} color="#000000" />
-        <Controls className="!bottom-6 !right-6 !left-auto !top-auto" />
-      </ReactFlow>
-
-      {/* Hint overlay in domain view */}
-      <AnimatePresence>
-        {!activeSubmap && (
-          <motion.p
-            key="hint"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="absolute bottom-6 left-1/2 -translate-x-1/2 text-xs text-slate-500 pointer-events-none"
-          >
-            Click a domain card to explore its files
-          </motion.p>
-        )}
-      </AnimatePresence>
-    </div>
   );
 }
 
-// ─── Public export wrapped in provider ───────────────────────────────────────
-
 export function GraphViewer() {
   return (
-    <ReactFlowProvider>
-      <GraphViewerInner />
-    </ReactFlowProvider>
+      <ReactFlowProvider>
+        <GraphViewerInner />
+      </ReactFlowProvider>
   );
 }

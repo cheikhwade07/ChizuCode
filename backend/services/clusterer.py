@@ -21,10 +21,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
-from typing import Any
 
 import numpy as np
+from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from sklearn.cluster import AgglomerativeClustering
@@ -41,8 +42,6 @@ logger = logging.getLogger(__name__)
 # Config
 # ---------------------------------------------------------------------------
 
-import os
-from dotenv import load_dotenv
 load_dotenv()
 
 GOOGLE_CLOUD_PROJECT  = os.getenv("GOOGLE_CLOUD_PROJECT")
@@ -52,11 +51,39 @@ _gemini = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 GEMINI_MODEL = "gemini-2.5-flash-lite"
 
-# Clustering thresholds
-MAX_LEAF_FILES      = 3    # clusters with <= this many files become leaves
-MIN_CLUSTER_SIZE    = 2    # don't create clusters smaller than this
-MAX_CLUSTER_SIZE    = 20   # clusters larger than this get recursively split
-DISTANCE_THRESHOLD  = 0.4  # HAC cut threshold (cosine distance, 0=identical, 1=orthogonal)
+
+# ---------------------------------------------------------------------------
+# Threshold inference
+# ---------------------------------------------------------------------------
+
+def _infer_thresholds(files: list[dict]) -> tuple[float, int]:
+    """Infer clustering thresholds from file composition."""
+    extensions = [f["file_path"].split(".")[-1] for f in files]
+    tsx_ratio = extensions.count("tsx") / max(len(extensions), 1)
+
+    if tsx_ratio > 0.5:
+        return 0.25, 5   # frontend-heavy
+    elif len(files) > 60:
+        return 0.35, 3   # large mixed repo
+    else:
+        return 0.4, 3    # default
+
+def _group_by_path(files: list[dict]) -> list[list[dict]]:
+    """Group files by top-level directory path for frontend-heavy repos."""
+    groups: dict[str, list[dict]] = {}
+    for f in files:
+        parts = f["file_path"].replace("\\", "/").split("/")
+        key = f"{parts[0]}/{parts[1]}" if len(parts) >= 2 else parts[0]
+        groups.setdefault(key, []).append(f)
+    return list(groups.values())
+# ---------------------------------------------------------------------------
+# Clustering defaults (used only as fallback defaults in signatures)
+# ---------------------------------------------------------------------------
+
+_DEFAULT_DISTANCE_THRESHOLD = 0.4
+_DEFAULT_MAX_LEAF_FILES     = 3
+MIN_CLUSTER_SIZE            = 2
+MAX_CLUSTER_SIZE            = 20
 
 _SEMAPHORE = asyncio.Semaphore(10)
 
@@ -128,7 +155,6 @@ async def _call_gemini(prompt: str) -> dict:
                     ),
                 )
                 text = (response.text or "").strip()
-                # strip markdown fences if present
                 text = re.sub(r"^```json\s*", "", text)
                 text = re.sub(r"\s*```$", "", text)
                 return json.loads(text)
@@ -137,11 +163,10 @@ async def _call_gemini(prompt: str) -> dict:
                 if attempt == 2:
                     return {}
             except Exception as e:
-                wait = 2 ** attempt
                 logger.warning("Gemini call failed attempt %d: %s", attempt + 1, e)
                 if attempt == 2:
                     return {}
-                await asyncio.sleep(wait)
+                await asyncio.sleep(2 ** attempt)
     return {}
 
 
@@ -153,9 +178,6 @@ def collapse_to_files(enriched_chunks: list[dict]) -> list[dict]:
     """
     Collapse chunk-level dicts into file-level nodes.
     Averages summary_vectors for split files.
-
-    Input:  enriched chunk dicts (output of process_chunks)
-    Output: list of file-level dicts with averaged summary_vector
     """
     file_map: dict[str, dict] = {}
 
@@ -172,7 +194,6 @@ def collapse_to_files(enriched_chunks: list[dict]) -> list[dict]:
             }
         if chunk.get("summary_vector") is not None:
             file_map[fp]["vectors"].append(chunk["summary_vector"])
-        # keep the best (longest) summary
         if len(chunk.get("summary", "")) > len(file_map[fp]["summary"]):
             file_map[fp]["summary"] = chunk.get("summary", "")
 
@@ -193,7 +214,10 @@ def collapse_to_files(enriched_chunks: list[dict]) -> list[dict]:
 # Step 2 — HAC clustering
 # ---------------------------------------------------------------------------
 
-def _cluster_files(files: list[dict]) -> list[list[dict]]:
+def _cluster_files(
+        files: list[dict],
+        distance_threshold: float = _DEFAULT_DISTANCE_THRESHOLD,
+) -> list[list[dict]]:
     """
     Run HAC on summary_vectors and return groups of files.
     Files without vectors are put in their own singleton group.
@@ -208,11 +232,11 @@ def _cluster_files(files: list[dict]) -> list[list[dict]]:
         return groups
 
     vectors = np.array([f["summary_vector"] for f in valid], dtype=np.float32)
-    vectors = normalize(vectors)  # cosine via normalized euclidean
+    vectors = normalize(vectors)
 
     model = AgglomerativeClustering(
         n_clusters=None,
-        distance_threshold=DISTANCE_THRESHOLD,
+        distance_threshold=distance_threshold,
         metric="euclidean",
         linkage="average",
     )
@@ -254,34 +278,34 @@ async def _build_leaf(file: dict) -> dict:
     }
 
 
-async def _build_cluster(files: list[dict], depth: int = 0) -> dict:
+async def _build_cluster(
+        files: list[dict],
+        depth: int = 0,
+        distance_threshold: float = _DEFAULT_DISTANCE_THRESHOLD,
+        max_leaf_files: int = _DEFAULT_MAX_LEAF_FILES,
+) -> dict:
     """
     Recursively build an internal Quanta node.
     Splits into subclusters if too large, collapses to leaf if small enough.
     """
-    # Base case — single file
     if len(files) == 1:
         return await _build_leaf(files[0])
 
-    # Base case — small enough to treat all as direct leaf children
-    if len(files) <= MAX_LEAF_FILES:
-        children = await asyncio.gather(*[_build_leaf(f) for f in files])
-        children = list(children)
+    if len(files) <= max_leaf_files:
+        children = list(await asyncio.gather(*[_build_leaf(f) for f in files]))
     else:
-        # Recurse — split into subclusters
-        groups = _cluster_files(files)
+        groups = _cluster_files(files, distance_threshold)
 
-        # If clustering produced one group (all files too similar or too few),
-        # force split to avoid infinite recursion
-        if len(groups) == 1 and len(files) > MAX_LEAF_FILES:
+        if len(groups) == 1 and len(files) > max_leaf_files:
             mid = len(files) // 2
             groups = [files[:mid], files[mid:]]
 
-        child_tasks = [_build_cluster(group, depth + 1) for group in groups]
-        children = list(await asyncio.gather(*child_tasks))
+        children = list(await asyncio.gather(*[
+            _build_cluster(group, depth + 1, distance_threshold, max_leaf_files)
+            for group in groups
+        ]))
 
-    # Label this cluster using its children's labels and summaries
-    child_labels  = [c["label"] for c in children]
+    child_labels    = [c["label"] for c in children]
     child_summaries = "\n".join(
         f"- {c['label']}: {c.get('summary', '')}" for c in children
     )
@@ -306,33 +330,44 @@ async def _build_cluster(files: list[dict], depth: int = 0) -> dict:
 # ---------------------------------------------------------------------------
 
 async def build_cluster_tree(
-    enriched_chunks: list[dict],
-    repo_id: str,
+        enriched_chunks: list[dict],
+        repo_id: str,
 ) -> dict:
     """
     Full clustering pipeline.
 
     1. Collapse chunks to file-level nodes
-    2. Recursively cluster into Quanta tree
-    3. Return root node as JSON-serializable dict
-
-    Does NOT persist to DB — call persist_cluster_tree separately.
+    2. Infer thresholds from repo composition
+    3. Recursively cluster into Quanta tree
+    4. Return root node as JSON-serializable dict
     """
     logger.info("collapsing %d chunks to file nodes", len(enriched_chunks))
     files = collapse_to_files(enriched_chunks)
+
+    distance_threshold, max_leaf_files = _infer_thresholds(files)
+    logger.info("thresholds — distance: %s  max_leaf: %s", distance_threshold, max_leaf_files)
     logger.info("clustering %d files", len(files))
 
-    # Top-level: cluster all files
-    groups = _cluster_files(files)
-    logger.info("top-level groups: %d", len(groups))
+    tsx_ratio = sum(1 for f in files if f["file_path"].endswith(".tsx")) / max(len(files), 1)
+
+    if tsx_ratio > 0.5:
+        groups = _group_by_path(files)
+        logger.info("path-based grouping: %d top-level groups", len(groups))
+    else:
+        groups = _cluster_files(files, distance_threshold)
+        logger.info("HAC grouping: %d top-level groups", len(groups))
 
     if len(groups) == 1:
-        # Single top-level cluster — build directly
-        root = await _build_cluster(files)
+        root = await _build_cluster(
+            files,
+            distance_threshold=distance_threshold,
+            max_leaf_files=max_leaf_files,
+        )
     else:
-        # Multiple top-level clusters — build each, wrap in synthetic root
-        child_tasks = [_build_cluster(group) for group in groups]
-        children = list(await asyncio.gather(*child_tasks))
+        children = list(await asyncio.gather(*[
+            _build_cluster(group, distance_threshold=distance_threshold, max_leaf_files=max_leaf_files)
+            for group in groups
+        ]))
 
         child_labels    = [c["label"] for c in children]
         child_summaries = "\n".join(
@@ -359,7 +394,6 @@ async def build_cluster_tree(
 def flatten_tree(node: dict, repo_id: str, parent_id: str | None = None) -> list[dict]:
     """
     Flatten the tree into a list of domain rows for DB insertion.
-    Returns list of dicts ready for insert_domain().
     """
     rows = []
     rows.append({
