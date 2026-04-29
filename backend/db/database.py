@@ -193,7 +193,21 @@ def get_repo(repo_id: str) -> dict | None:
             row = cur.fetchone()
             return dict(row) if row else None
 
-
+def get_latest_ready_repo() -> dict | None:
+    """Return the most recently updated repo with status=ready, or None."""
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, name, status, chunk_count
+                FROM repos
+                WHERE status = 'ready'
+                ORDER BY updated_at DESC
+                    LIMIT 1
+                """
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
 # ---------------------------------------------------------------------------
 # Chunk helpers
 # ---------------------------------------------------------------------------

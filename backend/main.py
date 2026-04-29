@@ -13,7 +13,20 @@ Endpoints:
 """
 
 from __future__ import annotations
+# change this:
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
+from backend.routers.ingest import router as ingest_router
+from backend.routers.query import router as query_router
+
+# to this:
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+
+from backend.routers.ingest import router as ingest_router
+from backend.routers.query import router as query_router
+from backend.db.database import get_latest_ready_repo
 import logging
 
 from fastapi import FastAPI
@@ -61,6 +74,12 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Routers
 # ---------------------------------------------------------------------------
+@app.get("/repo/latest")
+def latest_repo():
+    repo = get_latest_ready_repo()
+    if not repo:
+        raise HTTPException(status_code=404, detail="No ready repo found")
+    return {"repo_id": str(repo["id"]), "name": repo["name"]}
 
 app.include_router(ingest_router, tags=["ingestion"])
 app.include_router(query_router,  tags=["query"])
@@ -97,3 +116,4 @@ async def root():
 async def on_startup():
     logger.info("Codebase Explorer API starting up")
     logger.info("Docs available at /docs")
+

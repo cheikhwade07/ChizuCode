@@ -82,6 +82,7 @@ export interface FileEntry {
 export interface Submap {
     name: string;
     files: FileEntry[];
+    dependsOn: string[];
 }
 
 export interface GraphData {
@@ -132,6 +133,7 @@ function clusterToSubmap(cluster: BackendCluster): Submap {
     return {
         name: cluster.label,
         files,
+        dependsOn: [],
     };
 }
 
@@ -153,6 +155,7 @@ export function adaptBackendTree(tree: BackendTree): GraphData {
                 {
                     name: tree.label,
                     files: [leafToFileEntry(tree, [tree])],
+                    dependsOn: [],
                 },
             ],
         };
@@ -168,8 +171,20 @@ export function adaptBackendTree(tree: BackendTree): GraphData {
             return {
                 name: child.label,
                 files: [leafToFileEntry(child, [child])],
+                dependsOn: [],
             };
         });
+
+        // Wire inter-cluster edges from the root cluster's edge list.
+        // tree.edges entries use cluster labels as from/to identifiers.
+        const submapIndex = new Map(submaps.map((s) => [s.name, s]));
+        for (const edge of tree.edges) {
+            const source = submapIndex.get(edge.from);
+            if (source && submapIndex.has(edge.to)) {
+                source.dependsOn.push(edge.to);
+            }
+        }
+
         return { submaps };
     }
 
@@ -192,6 +207,12 @@ export interface RepoStatus {
     status: "pending" | "ingesting" | "ready" | "failed";
     chunk_count: number;
     error: string | null;
+}
+export async function getLatestRepoId(): Promise<string> {
+    const res = await fetch(`${API_BASE}/repo/latest`);
+    if (!res.ok) throw new Error(`Could not fetch latest repo: ${res.statusText}`);
+    const data = await res.json();
+    return data.repo_id;
 }
 
 /**
@@ -243,7 +264,13 @@ export async function fetchGraphData(repoId: string): Promise<GraphData> {
     const tree: BackendTree = await res.json();
     return adaptBackendTree(tree);
 }
-
+export async function fetchLatestGraphData(): Promise<{ repoId: string; graphData: GraphData }> {
+    const res = await fetch(`${API_BASE}/repo/latest`);
+    if (!res.ok) throw new Error("No ready repo found");
+    const { repo_id } = await res.json();
+    const graphData = await fetchGraphData(repo_id);
+    return { repoId: repo_id, graphData };
+}
 /**
  * Full flow: ingest → poll → fetch graph.
  * Returns GraphData ready for the GraphViewer.

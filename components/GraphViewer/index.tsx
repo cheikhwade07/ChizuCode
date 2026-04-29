@@ -19,8 +19,7 @@ import { ArrowLeft, Zap } from 'lucide-react';
 import { SubmapNode } from './SubmapNode';
 import { FileNode } from './FileNode';
 import { AnimatedEdge } from './AnimatedEdge';
-import { fetchGraphData } from './adapter';
-
+import { fetchLatestGraphData } from './adapter';
 import dagre from "@dagrejs/dagre";
 
 // ---------------------------------------------------------------------------
@@ -33,10 +32,10 @@ interface FileEntry {
   functionality: string;
   connection: string[];
 }
-
 interface Submap {
   name: string;
   files: FileEntry[];
+  dependsOn?: string[];
 }
 
 interface GraphData {
@@ -212,24 +211,17 @@ function GraphViewerInner() {
   const { fitView } = useReactFlow();
 
   // Load graph data from backend on mount
-  useEffect(() => {
-    const repoId = process.env.NEXT_PUBLIC_REPO_ID;
-    if (!repoId) {
-      setError("NEXT_PUBLIC_REPO_ID is not set");
-      setLoading(false);
-      return;
-    }
-
-    fetchGraphData(repoId)
-        .then((data) => {
-          setGraphData(data);
-          setLoading(false);
-        })
-        .catch((err) => {
-          setError(err.message);
-          setLoading(false);
-        });
-  }, []);
+    useEffect(() => {
+      fetchLatestGraphData()
+          .then(({ graphData }) => {
+            setGraphData(graphData);
+            setLoading(false);
+          })
+          .catch((err) => {
+            setError(err.message);
+            setLoading(false);
+          });
+    }, []);
 
   const submaps = graphData?.submaps ?? [];
 
@@ -396,7 +388,7 @@ function GraphViewerInner() {
       </ReactFlow>
 
       {/* Chat input — always visible at the bottom */}
-      <ChatInput onSubmit={(query) => console.log('User query:', query)} />
+      {/*<ChatInput onSubmit={(query) => console.log('User query:', query)} />*/}
     </div>
   );
 }
