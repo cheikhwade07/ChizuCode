@@ -14,19 +14,19 @@ function extractDisplayLine(raw: string): string {
   return lines.length > 0 ? lines[lines.length - 1] : raw.trim();
 }
 
-// Fixed pixel height of the faded scrollable zone — the mask stays the same height always
+// Fixed pixel height of the faded scrollable zone — mask stays the same height always
 const FADED_ZONE_HEIGHT = 72;
 
 export function ChatInput({ onSubmit }: ChatInputProps) {
-  const [inputValue, setInputValue] = useState('');
-  const [history, setHistory]       = useState<string[]>([]);
+  const [inputValue, setInputValue]   = useState('');
+  const [history, setHistory]         = useState<string[]>([]);
   const [showHistory, setShowHistory] = useState(false);
 
   const textareaRef    = useRef<HTMLTextAreaElement>(null);
-  const fadedScrollRef = useRef<HTMLDivElement>(null);      // the faded scrollable zone
-  const historyListRef = useRef<HTMLUListElement>(null);    // the popup list
+  const fadedScrollRef = useRef<HTMLDivElement>(null);
+  const historyListRef = useRef<HTMLUListElement>(null);
 
-  // ── Auto-resize textarea ────────────────────────────────────────────────────
+  // ── Auto-resize textarea ───────────────────────────────────────────────────
   const resizeTextarea = () => {
     const el = textareaRef.current;
     if (!el) return;
@@ -34,28 +34,29 @@ export function ChatInput({ onSubmit }: ChatInputProps) {
     el.style.height = `${Math.min(el.scrollHeight, 128)}px`;
   };
 
-  // Resize on every inputValue change (covers programmatic sets from history clicks)
   useEffect(() => { resizeTextarea(); }, [inputValue]);
 
-  // ── Scroll faded zone to bottom whenever a new entry is added ───────────────
+  // ── Scroll faded zone to bottom on new entry ───────────────────────────────
   useEffect(() => {
     if (fadedScrollRef.current) {
-      fadedScrollRef.current.scrollTo({ top: fadedScrollRef.current.scrollHeight, behavior: 'smooth' });
+      fadedScrollRef.current.scrollTo({
+        top: fadedScrollRef.current.scrollHeight,
+        behavior: 'smooth',
+      });
     }
   }, [history.length]);
 
-  // ── Scroll popup list to bottom whenever it opens ──────────────────────────
+  // ── Scroll popup list to bottom when opened ────────────────────────────────
   useEffect(() => {
     if (showHistory && historyListRef.current) {
       historyListRef.current.scrollTop = historyListRef.current.scrollHeight;
     }
   }, [showHistory, history.length]);
 
-  // ── Submit ──────────────────────────────────────────────────────────────────
+  // ── Submit ─────────────────────────────────────────────────────────────────
   const handleSubmit = () => {
     const trimmed = inputValue.trim();
     if (!trimmed) return;
-
     setHistory((prev) => [...prev, trimmed]);
     setShowHistory(false);
     setInputValue('');
@@ -70,10 +71,8 @@ export function ChatInput({ onSubmit }: ChatInputProps) {
     }
   };
 
-  // Stop wheel events inside the faded zone from panning the React Flow canvas
-  const stopWheelPropagation = (e: WheelEvent<HTMLDivElement>) => {
-    e.stopPropagation();
-  };
+  // Stop scrolling inside the faded zone from panning the React Flow canvas
+  const stopWheelPropagation = (e: WheelEvent<HTMLDivElement>) => e.stopPropagation();
 
   return (
     <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 w-full max-w-lg px-4 flex flex-col items-center gap-2">
@@ -81,7 +80,7 @@ export function ChatInput({ onSubmit }: ChatInputProps) {
       {/* ── Faded scrollable history zone ──────────────────────────────────── */}
       <div className="relative w-full">
 
-        {/* The fixed-height container: mask-gradient sits here, height never changes */}
+        {/* Fixed-height container: mask-gradient applied here so height (and fade) never shifts */}
         <div
           ref={fadedScrollRef}
           onWheel={stopWheelPropagation}
@@ -92,18 +91,17 @@ export function ChatInput({ onSubmit }: ChatInputProps) {
           style={{
             height: history.length > 0 ? `${FADED_ZONE_HEIGHT}px` : '0px',
             transition: 'height 0.3s ease',
-            // Mask: fully transparent at top, opaque at bottom — height is fixed so effect is consistent
+            // Transparent at top → opaque at bottom; fixed container = consistent fade depth
             maskImage:
               'linear-gradient(to bottom, transparent 0%, rgba(0,0,0,0.2) 30%, rgba(0,0,0,0.65) 60%, black 100%)',
             WebkitMaskImage:
               'linear-gradient(to bottom, transparent 0%, rgba(0,0,0,0.2) 30%, rgba(0,0,0,0.65) 60%, black 100%)',
-            // Hide the scrollbar visually
             scrollbarWidth: 'none',
             msOverflowStyle: 'none',
             cursor: history.length > 0 ? 'pointer' : 'default',
           }}
         >
-          {/* Padding top pushes content toward the bottom so latest sits at the opaque edge */}
+          {/* Content stacks at the bottom so the latest entry sits at the opaque edge */}
           <div className="flex flex-col justify-end min-h-full pt-4 pb-0.5 px-1 gap-1">
             {history.map((q, i) => (
               <motion.p
@@ -111,7 +109,8 @@ export function ChatInput({ onSubmit }: ChatInputProps) {
                 initial={i === history.length - 1 ? { opacity: 0, y: 8 } : false}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.3, ease: 'easeOut' }}
-                className="text-sm text-slate-200 font-medium leading-snug select-none shrink-0"
+                // Matches node card text: dark on the warm-cream canvas
+                className="text-sm text-black font-medium leading-snug select-none shrink-0"
               >
                 {extractDisplayLine(q)}
               </motion.p>
@@ -119,7 +118,7 @@ export function ChatInput({ onSubmit }: ChatInputProps) {
           </div>
         </div>
 
-        {/* History popup — positioned above the faded zone */}
+        {/* History popup — same card style as FileNode detail popup */}
         <AnimatePresence>
           {showHistory && history.length > 0 && (
             <motion.div
@@ -127,12 +126,14 @@ export function ChatInput({ onSubmit }: ChatInputProps) {
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 6, scale: 0.97 }}
               transition={{ duration: 0.18 }}
-              className="absolute bottom-full mb-2 left-0 right-0 z-30 rounded-xl border border-slate-700 bg-slate-900/95 backdrop-blur-md shadow-2xl overflow-hidden"
+              // bg-[#E8DFCA] + border-black + shadow matches SubmapNode / FileNode popup
+              className="absolute bottom-full mb-2 left-0 right-0 z-30 rounded-xl border-2 border-black bg-[#E8DFCA] shadow-[6px_6px_0_#000] overflow-hidden"
               onMouseDown={(e) => e.stopPropagation()}
             >
-              <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-800">
-                <History className="h-3.5 w-3.5 text-slate-500" />
-                <span className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+              {/* Header — matches the top-bar bg used in index.tsx */}
+              <div className="flex items-center gap-2 px-4 py-2.5 border-b-2 border-black bg-[#F5EFE6]">
+                <History className="h-3.5 w-3.5 text-black/50" />
+                <span className="text-xs font-semibold text-black/60 uppercase tracking-wide">
                   Request History
                 </span>
               </div>
@@ -141,14 +142,18 @@ export function ChatInput({ onSubmit }: ChatInputProps) {
                 {history.map((q, i) => (
                   <li key={i}>
                     <button
-                      className="w-full text-left px-4 py-2.5 text-sm text-slate-300 hover:bg-slate-800 transition-colors"
+                      // Hover bg matches FileNode icon hover — #F5EFE6 warm cream
+                      className="w-full text-left px-4 py-2.5 text-sm text-black hover:bg-[#F5EFE6] transition-colors"
                       onClick={() => {
                         setInputValue(q);
                         setShowHistory(false);
                         textareaRef.current?.focus();
                       }}
                     >
-                      <span className="text-slate-500 text-xs mr-2 tabular-nums">{i + 1}.</span>
+                      {/* Accent number uses blue-600, matching FileNode's label accent */}
+                      <span className="text-blue-600 text-xs mr-2 tabular-nums font-semibold">
+                        {i + 1}.
+                      </span>
                       {q}
                     </button>
                   </li>
@@ -159,9 +164,10 @@ export function ChatInput({ onSubmit }: ChatInputProps) {
         </AnimatePresence>
       </div>
 
-      {/* ── Text input ─────────────────────────────────────────────────────── */}
+      {/* ── Text input — matches node card style ───────────────────────────── */}
       <div
-        className="relative w-full flex items-end gap-2 rounded-2xl border border-slate-700 bg-slate-900/90 backdrop-blur-md px-4 py-3 shadow-xl transition-colors focus-within:border-cyan-500/70"
+        // bg-[#E8DFCA] card + border-black + hard shadow = same as SubmapNode/FileNode
+        className="relative w-full flex items-end gap-2 rounded-2xl border-2 border-black bg-[#E8DFCA] px-4 py-3 shadow-[6px_6px_0_#000] transition-shadow focus-within:shadow-[6px_6px_0_rgba(29,78,216,0.5)]"
         onMouseDown={(e) => e.stopPropagation()}
       >
         <textarea
@@ -173,20 +179,23 @@ export function ChatInput({ onSubmit }: ChatInputProps) {
           onInput={resizeTextarea}
           rows={1}
           placeholder="Ask about this codebase…"
-          className="flex-1 bg-transparent text-sm text-slate-200 placeholder-slate-600 resize-none focus:outline-none leading-relaxed overflow-hidden"
+          // Text black, placeholder matches muted node sub-text
+          className="flex-1 bg-transparent text-sm text-black placeholder-black/40 resize-none focus:outline-none leading-relaxed overflow-hidden"
           style={{ minHeight: '24px', maxHeight: '128px' }}
         />
+        {/* Send button: bg-cyan-600 matches the "Simulate Login Flow" button in index.tsx */}
         <button
           id="codebase-chat-send"
           onClick={handleSubmit}
           disabled={!inputValue.trim()}
-          className="shrink-0 rounded-lg p-2 bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-800 disabled:text-slate-600 disabled:cursor-not-allowed text-white transition-colors"
+          className="shrink-0 rounded-lg p-2 bg-cyan-600 hover:bg-cyan-500 disabled:bg-black/10 disabled:text-black/30 disabled:cursor-not-allowed text-white transition-colors"
         >
           <Send className="h-4 w-4" />
         </button>
       </div>
 
-      <p className="text-[10px] text-slate-700 select-none">
+      {/* Hint text — muted, same tone as node sub-labels */}
+      <p className="text-[10px] text-black/35 select-none">
         Enter to send · Shift+Enter for new line · scroll or click faded text for history
       </p>
     </div>
