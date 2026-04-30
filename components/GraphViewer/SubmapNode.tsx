@@ -78,10 +78,9 @@ export function SubmapNode({ data }: any) {
       </div>
 
       <h2 className="text-xl font-bold text-100 capitalize mb-1">{data.name}</h2>
-      <p className="text-sm text-400 mb-4">Click to explore this domain</p>
 
       <div className={cn("flex items-center gap-1 text-xs font-semibold", colors.icon)}>
-        Zoom in <ChevronRight className="h-3 w-3" />
+        Click to explore this domain <ChevronRight className="h-3 w-3" />
       </div>
     </motion.div>
   );
