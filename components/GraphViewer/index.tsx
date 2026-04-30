@@ -312,7 +312,7 @@ function GraphViewerInner() {
               exit={{ opacity: 0, x: -12 }}
               transition={{ duration: 0.2 }}
               onClick={loadDomainView}
-              className="flex items-center gap-1.5 text-black-400 hover:text-blue-200 transition-colors text-sm font-medium"
+              className="flex items-center gap-1.5 text-black-400 hover:text-gray-600 transition-colors text-sm font-medium"
             >
               <ArrowLeft className="h-4 w-4" />
               All domains
