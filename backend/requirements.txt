@@ -1,0 +1,9 @@
+fastapi==0.136.1
+uvicorn[standard]==0.46.0
+python-dotenv==1.2.2
+psycopg2-binary==2.9.12
+pgvector==0.4.2
+google-genai==1.73.1
+voyageai==0.3.7
+numpy==2.4.4
+scikit-learn==1.8.0
