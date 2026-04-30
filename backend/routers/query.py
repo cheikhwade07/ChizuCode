@@ -56,6 +56,7 @@ async def query_repo_endpoint(repo_id: str, body: QueryRequest):
     for future graph highlighting.
     """
     repo_id = repo_id.strip('"')
+    logger.info("query received - question: %s | domain_id: %s", body.question, body.domain_id)
     if not body.question.strip():
         raise HTTPException(status_code=422, detail="question cannot be empty")
 

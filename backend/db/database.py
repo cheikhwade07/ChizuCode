@@ -392,20 +392,32 @@ def search_summary_vectors(
             if domain_id:
                 cur.execute(
                     """
+                    WITH RECURSIVE scoped_domains AS (
+                        SELECT id
+                        FROM domains
+                        WHERE id = %s::uuid AND repo_id = %s::uuid
+                        UNION ALL
+                        SELECT d.id
+                        FROM domains d
+                        JOIN scoped_domains sd ON d.parent_id = sd.id
+                        WHERE d.repo_id = %s::uuid
+                    )
                     SELECT
                         c.id AS chunk_id,
                         c.file_path,
                         c.summary,
                         c.raw_code,
+                        v.domain_id,
                         1 - (v.summary_vector <=> %s::vector) AS score
                     FROM vectors v
                     JOIN chunks c ON c.id = v.chunk_id
-                    WHERE v.repo_id = %s AND v.domain_id = %s
+                    WHERE v.repo_id = %s
+                      AND v.domain_id IN (SELECT id FROM scoped_domains)
                       AND v.summary_vector IS NOT NULL
                     ORDER BY v.summary_vector <=> %s::vector
                     LIMIT %s
                     """,
-                    (query_vector, repo_id, domain_id, query_vector, top_k),
+                    (domain_id, repo_id, repo_id, query_vector, repo_id, query_vector, top_k),
                 )
             else:
                 cur.execute(
@@ -415,6 +427,7 @@ def search_summary_vectors(
                         c.file_path,
                         c.summary,
                         c.raw_code,
+                        v.domain_id,
                         1 - (v.summary_vector <=> %s::vector) AS score
                     FROM vectors v
                     JOIN chunks c ON c.id = v.chunk_id
@@ -443,20 +456,32 @@ def search_code_vectors(
             if domain_id:
                 cur.execute(
                     """
+                    WITH RECURSIVE scoped_domains AS (
+                        SELECT id
+                        FROM domains
+                        WHERE id = %s::uuid AND repo_id = %s::uuid
+                        UNION ALL
+                        SELECT d.id
+                        FROM domains d
+                        JOIN scoped_domains sd ON d.parent_id = sd.id
+                        WHERE d.repo_id = %s::uuid
+                    )
                     SELECT
                         c.id AS chunk_id,
                         c.file_path,
                         c.summary,
                         c.raw_code,
+                        v.domain_id,
                         1 - (v.code_vector <=> %s::vector) AS score
                     FROM vectors v
                     JOIN chunks c ON c.id = v.chunk_id
-                    WHERE v.repo_id = %s AND v.domain_id = %s
+                    WHERE v.repo_id = %s
+                      AND v.domain_id IN (SELECT id FROM scoped_domains)
                       AND v.code_vector IS NOT NULL
                     ORDER BY v.code_vector <=> %s::vector
                     LIMIT %s
                     """,
-                    (query_vector, repo_id, domain_id, query_vector, top_k),
+                    (domain_id, repo_id, repo_id, query_vector, repo_id, query_vector, top_k),
                 )
             else:
                 cur.execute(
@@ -466,6 +491,7 @@ def search_code_vectors(
                         c.file_path,
                         c.summary,
                         c.raw_code,
+                        v.domain_id,
                         1 - (v.code_vector <=> %s::vector) AS score
                     FROM vectors v
                     JOIN chunks c ON c.id = v.chunk_id

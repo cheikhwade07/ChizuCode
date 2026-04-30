@@ -318,6 +318,15 @@ async def query_repo(
             SEARCH_TOP_K,
         ),
     )
+    logger.info(
+        "retrieval repo=%s domain=%s summary_count=%d code_count=%d summary_domains=%s code_domains=%s",
+        repo_id,
+        domain_id,
+        len(summary_results),
+        len(code_results),
+        sorted({str(r.get("domain_id")) for r in summary_results if r.get("domain_id")}),
+        sorted({str(r.get("domain_id")) for r in code_results if r.get("domain_id")}),
+    )
 
     # ── 3. RRF merge ─────────────────────────────────────────────────────
     merged = _rrf_merge(summary_results, code_results)

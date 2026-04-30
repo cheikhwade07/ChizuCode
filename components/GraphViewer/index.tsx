@@ -15,6 +15,6 @@ const GraphViewerCanvas = dynamic(
   }
 );
 
-export function GraphViewer() {
-  return <GraphViewerCanvas />;
+export function GraphViewer({ repoId }: { repoId: string }) {
+  return <GraphViewerCanvas repoId={repoId} />;
 }

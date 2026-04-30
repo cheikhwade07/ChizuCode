@@ -49,6 +49,7 @@ export interface BackendNode {
 }
 
 export interface BackendLeaf {
+    id?: string;
     type: "leaf";
     label: string;
     summary: string;
@@ -61,6 +62,7 @@ export interface BackendLeaf {
 }
 
 export interface BackendCluster {
+    id?: string;
     type: "cluster";
     label: string;
     summary: string;
@@ -80,13 +82,30 @@ export interface FileEntry {
 }
 
 export interface Submap {
+    id?: string;
     name: string;
     files: FileEntry[];
     dependsOn: string[];
 }
 
 export interface GraphData {
+    rootId?: string;
+    rootLabel: string;
     submaps: Submap[];
+}
+
+export interface QuerySource {
+    chunk_id: string;
+    file_path: string;
+    domain_id: string | null;
+    score: number;
+    summary: string;
+}
+
+export interface QueryResult {
+    answer: string;
+    confidence: string;
+    sources: QuerySource[];
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -138,6 +157,7 @@ function clusterToSubmap(cluster: BackendCluster): Submap {
     }));
 
     return {
+        id: cluster.id,
         name: cluster.label,
         files,
         dependsOn: [],
@@ -158,8 +178,11 @@ export function adaptBackendTree(tree: BackendTree): GraphData {
     if (tree.type === "leaf") {
         // Edge case: entire repo is one file
         return {
+            rootId: tree.id,
+            rootLabel: tree.label,
             submaps: [
                 {
+                    id: tree.id,
                     name: tree.label,
                     files: [
                         {
@@ -179,7 +202,11 @@ export function adaptBackendTree(tree: BackendTree): GraphData {
     const leafChildren = tree.children.filter((child): child is BackendLeaf => child.type === "leaf");
 
     if (clusterChildren.length === 0) {
-        return { submaps: [clusterToSubmap(tree)] };
+        return {
+            rootId: tree.id,
+            rootLabel: tree.label,
+            submaps: [clusterToSubmap(tree)],
+        };
     }
 
     const submaps: Submap[] = clusterChildren.map(clusterToSubmap);
@@ -249,7 +276,11 @@ export function adaptBackendTree(tree: BackendTree): GraphData {
         }));
     }
 
-    return { submaps };
+    return {
+        rootId: tree.id,
+        rootLabel: tree.label,
+        submaps,
+    };
 }
 
 
@@ -351,15 +382,46 @@ export async function ingestAndFetch(
 export async function queryRepo(
     repoId: string,
     question: string,
-    domainId?: string
-): Promise<{ answer: string; confidence: string; sources: any[] }> {
-    const res = await fetch(`${API_BASE}/repo/${repoId}/query`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question, domain_id: domainId }),
-    });
-    if (!res.ok) throw new Error(`Query failed: ${res.statusText}`);
-    return res.json();
+    domainId?: string,
+    options?: { signal?: AbortSignal; timeoutMs?: number }
+): Promise<QueryResult> {
+    const controller = new AbortController();
+    const timeoutMs = options?.timeoutMs ?? 30000;
+    const timeoutId = setTimeout(() => controller.abort(new DOMException("Query timed out", "AbortError")), timeoutMs);
+
+    const abortFromCaller = () => controller.abort(new DOMException("Query aborted", "AbortError"));
+    options?.signal?.addEventListener("abort", abortFromCaller, { once: true });
+
+    try {
+        const body: { question: string; domain_id?: string } = { question };
+        if (domainId) {
+            body.domain_id = domainId;
+        }
+
+        const res = await fetch(`${API_BASE}/repo/${repoId}/query`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+        });
+
+        const payload = await res.json().catch(() => null);
+        if (!res.ok) {
+            const detail = typeof payload?.detail === "string" ? payload.detail : res.statusText;
+            throw new Error(detail || "Query failed");
+        }
+
+        return {
+            answer: typeof payload?.answer === "string" && payload.answer.trim()
+                ? payload.answer
+                : "No answer returned.",
+            confidence: typeof payload?.confidence === "string" ? payload.confidence : "low",
+            sources: Array.isArray(payload?.sources) ? payload.sources : [],
+        };
+    } finally {
+        clearTimeout(timeoutId);
+        options?.signal?.removeEventListener("abort", abortFromCaller);
+    }
 }
 export async function checkRepoReady(repoId: string): Promise<boolean> {
     const res = await fetch(`${API_BASE}/repo/${repoId}`);

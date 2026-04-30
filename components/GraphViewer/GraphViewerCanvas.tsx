@@ -1,20 +1,22 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ForceGraph2D from 'react-force-graph-2d';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, X } from 'lucide-react';
-import { ChatInput } from './ChatInput';
-import graphData from '@/test.json';
+import { forceCollide, forceX, forceY } from 'd3-force';
+import { ChatPanel } from './ChatPanel';
+import { fetchGraphData } from './adapter';
 
 // --- Types ---
 interface FileEntry { fileName: string; directory: string; functionality: string; connection: string[]; }
-interface Submap { name: string; files: FileEntry[]; dependsOn?: string[]; }
+interface Submap { id?: string; name: string; files: FileEntry[]; dependsOn?: string[]; }
+interface GraphData { rootId?: string; rootLabel: string; submaps: Submap[]; }
 interface GNode {
   id: string; type: 'submap' | 'file'; label: string;
   fileCount?: number; directory?: string; functionality?: string;
   isHighlighted?: boolean; isFaded?: boolean;
-  x?: number; y?: number;
+  x?: number; y?: number; fx?: number; fy?: number;
 }
 interface GLink { source: string | GNode; target: string | GNode; isAnimated?: boolean; isFaded?: boolean; }
 
@@ -41,6 +43,61 @@ function drawIcon(ctx: CanvasRenderingContext2D, paths: string[], x: number, y: 
   ctx.lineJoin = 'round';
   paths.forEach(p => ctx.stroke(new Path2D(p)));
   ctx.restore();
+}
+
+function fitTextLines(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+  maxLines: number
+) {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let current = '';
+
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (ctx.measureText(candidate).width <= maxWidth) {
+      current = candidate;
+      continue;
+    }
+
+    if (current) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = word;
+    }
+
+    if (lines.length === maxLines) {
+      break;
+    }
+  }
+
+  if (lines.length < maxLines && current) {
+    lines.push(current);
+  }
+
+  if (lines.length > maxLines) {
+    lines.length = maxLines;
+  }
+
+  if (lines.length === 0) {
+    return [''];
+  }
+
+  if (words.length > 0 && lines.length === maxLines) {
+    let lastLine = lines[maxLines - 1];
+    const usedWords = lines.join(' ').split(/\s+/).filter(Boolean).length;
+    if (usedWords < words.length) {
+      while (`${lastLine}…` && ctx.measureText(`${lastLine}…`).width > maxWidth && lastLine.length > 1) {
+        lastLine = lastLine.slice(0, -1).trimEnd();
+      }
+      lines[maxLines - 1] = `${lastLine}…`;
+    }
+  }
+
+  return lines;
 }
 
 function drawNode(node: GNode, ctx: CanvasRenderingContext2D, scale: number, phase: number) {
@@ -76,12 +133,16 @@ function drawNode(node: GNode, ctx: CanvasRenderingContext2D, scale: number, pha
     ctx.fillText(`${node.fileCount ?? 0} files`, x + w - 40, y + 32);
 
     // Main Submap Name
-    ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'left';
-    ctx.fillText(node.label.charAt(0).toUpperCase() + node.label.slice(1), x + 16, y + 74);
+    const title = node.label.charAt(0).toUpperCase() + node.label.slice(1);
+    ctx.font = 'bold 14px sans-serif'; ctx.textAlign = 'left'; ctx.fillStyle = C.text; ctx.textBaseline = 'top';
+    const titleLines = fitTextLines(ctx, title, w - 32, 2);
+    titleLines.forEach((line, index) => {
+      ctx.fillText(line, x + 16, y + 66 + index * 18);
+    });
 
     // Bottom hint text
-    ctx.font = '600 11px sans-serif'; ctx.fillStyle = '#444';
-    ctx.fillText('Click to explore this domain >', x + 16, y + 96);
+    ctx.font = '600 11px sans-serif'; ctx.fillStyle = '#444'; ctx.textBaseline = 'alphabetic';
+    ctx.fillText('Click to explore this domain >', x + 16, y + 104);
   } else {
     // File node icon
     ctx.fillStyle = node.isHighlighted ? '#dbeafe' : '#e8d7ae'; rrect(ctx, x + 10, y + 8, 32, 32, 8); ctx.fill(); ctx.stroke();
@@ -96,8 +157,11 @@ function drawNode(node: GNode, ctx: CanvasRenderingContext2D, scale: number, pha
 }
 
 // --- Component ---
-export function GraphViewerCanvas() {
-  const submaps: Submap[] = (graphData as any).submaps;
+export function GraphViewerCanvas({ repoId }: { repoId: string }) {
+  const [graphData, setGraphData] = useState<GraphData | null>(null);
+  const [graphState, setGraphState] = useState<{ nodes: GNode[]; links: GLink[] }>({ nodes: [], links: [] });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<string>('domain');
   const [isPlaying, setIsPlaying] = useState(false);
   const [popup, setPopup] = useState<{ node: GNode; sx: number; sy: number } | null>(null);
@@ -107,11 +171,79 @@ export function GraphViewerCanvas() {
   const phaseRef = useRef(0);
   const graphRef = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const submaps = graphData?.submaps ?? [];
+  const isDomainView = view === 'domain';
+  const currentSubmap = useMemo(
+    () => (isDomainView ? null : submaps.find((submap) => submap.name === view) ?? null),
+    [isDomainView, submaps, view]
+  );
+  const currentSubmapFileCount = useMemo(() => {
+    if (isDomainView) return 0;
+    return submaps.find((submap) => submap.name === view)?.files.length ?? 0;
+  }, [isDomainView, submaps, view]);
+  const currentScope = useMemo(() => {
+    if (!graphData) {
+      return { id: undefined, label: 'Root' };
+    }
+
+    if (isDomainView) {
+      return { id: undefined, label: 'Root' };
+    }
+
+    if (!currentSubmap || currentSubmap.name === 'Project Root') {
+      return { id: undefined, label: 'Root' };
+    }
+
+    return { id: currentSubmap.id, label: currentSubmap.name };
+  }, [currentSubmap, graphData, isDomainView]);
 
   useEffect(() => {
-    const update = () => { if (containerRef.current) setDims({ w: containerRef.current.clientWidth, h: containerRef.current.clientHeight - 64 }); };
-    update(); window.addEventListener('resize', update); return () => window.removeEventListener('resize', update);
-  }, []);
+    let cancelled = false;
+
+    setLoading(true);
+    setError(null);
+
+    fetchGraphData(repoId)
+      .then((data) => {
+        if (cancelled) return;
+        setGraphData(data);
+        setLoading(false);
+      })
+      .catch((err: Error) => {
+        if (cancelled) return;
+        setError(err.message);
+        setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [repoId]);
+
+  useEffect(() => {
+    if (loading || error) return;
+    const el = containerRef.current;
+    if (!el) return;
+
+    const update = () => {
+      setDims({
+        w: el.clientWidth,
+        h: el.clientHeight - 64,
+      });
+    };
+
+    update();
+    const raf = requestAnimationFrame(update);
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    window.addEventListener('resize', update);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      observer.disconnect();
+      window.removeEventListener('resize', update);
+    };
+  }, [loading, error]);
 
   useEffect(() => {
     let raf: number;
@@ -120,7 +252,9 @@ export function GraphViewerCanvas() {
   }, []);
 
   const applyGraph = (nodes: GNode[], links: GLink[], isDomain: boolean = false) => {
-    nodesRef.current = nodes; linksRef.current = links;
+    nodesRef.current = nodes;
+    linksRef.current = links;
+    setGraphState({ nodes, links });
     graphRef.current?.d3ReheatSimulation();
     
     // Instantly zoom out when loading a new graph to avoid starting too zoomed in
@@ -128,12 +262,14 @@ export function GraphViewerCanvas() {
       graphRef.current.zoom(0.8, 0);
     }
 
-    // Space out nodes to form a web without cramping
+    // Keep the graph readable without letting a few strong repulsive forces fling nodes too far away.
     setTimeout(() => {
       if (graphRef.current) {
-        // Domains are larger, so give them a massive repulsion to spread out widely
-        graphRef.current.d3Force('charge').strength(isDomain ? -4000 : -1000);
-        graphRef.current.d3Force('link').distance(isDomain ? 250 : 150);
+        graphRef.current.d3Force('charge').strength(isDomain ? -2200 : -440);
+        graphRef.current.d3Force('link').distance(isDomain ? 165 : 94);
+        graphRef.current.d3Force('collision', forceCollide(isDomain ? 112 : 76));
+        graphRef.current.d3Force('x', forceX(0).strength(isDomain ? 0.04 : 0.13));
+        graphRef.current.d3Force('y', forceY(0).strength(isDomain ? 0.04 : 0.13));
       }
     }, 10);
   };
@@ -170,7 +306,22 @@ export function GraphViewerCanvas() {
     applyGraph(nodes, links, false);
   }, [submaps]);
 
-  useEffect(() => { loadDomain(); }, [loadDomain]);
+  useEffect(() => {
+    if (!graphData) return;
+    loadDomain();
+  }, [graphData, loadDomain]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !isDomainView) {
+        setPopup(null);
+        loadDomain();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isDomainView, loadDomain]);
 
   const triggerAnimation = useCallback(() => {
     const activeIds = new Set(['userService.js', 'authController.js']);
@@ -181,10 +332,12 @@ export function GraphViewerCanvas() {
       const active = [src, tgt].sort().join('|') === ['userService.js', 'authController.js'].sort().join('|');
       l.isAnimated = active; l.isFaded = !active;
     });
+    setGraphState(({ nodes, links }) => ({ nodes: [...nodes], links: [...links] }));
     setIsPlaying(true);
     setTimeout(() => {
       nodesRef.current.forEach(n => { n.isHighlighted = false; n.isFaded = false; });
       linksRef.current.forEach(l => { l.isAnimated = false; l.isFaded = false; });
+      setGraphState(({ nodes, links }) => ({ nodes: [...nodes], links: [...links] }));
       setIsPlaying(false);
     }, 6000);
   }, []);
@@ -203,37 +356,85 @@ export function GraphViewerCanvas() {
     }
   }, [loadSubmap]);
 
+  const handleNodeDragEnd = useCallback((node: any) => {
+    const draggedNode = node as GNode;
+    draggedNode.fx = draggedNode.x;
+    draggedNode.fy = draggedNode.y;
+    setGraphState(({ nodes, links }) => ({ nodes: [...nodes], links: [...links] }));
+  }, []);
+
   const handleEngineStop = useCallback(() => {
     if (graphRef.current) {
-      graphRef.current.zoomToFit(400, 60);
+      const isDomain = view === 'domain';
+      graphRef.current.centerAt(0, 0, 250);
+      graphRef.current.zoomToFit(400, isDomain ? 72 : 78);
       // Cap the zoom so it doesn't feel cramped if there are only a few nodes
       setTimeout(() => {
-        if (graphRef.current && graphRef.current.zoom() > 1.0) {
-          graphRef.current.zoom(1.0, 300);
+        if (graphRef.current) {
+          const currentZoom = graphRef.current.zoom();
+          const maxZoom = isDomain ? 1.02 : 1.08;
+          const minZoom = isDomain ? 0.74 : 0.88;
+
+          if (currentZoom > maxZoom) {
+            graphRef.current.zoom(maxZoom, 300);
+          } else if (currentZoom < minZoom) {
+            graphRef.current.zoom(minZoom, 300);
+          }
         }
       }, 450);
     }
-  }, []);
+  }, [view]);
+
+  if (loading) {
+    return (
+      <div className="w-full h-screen bg-[#e6d9c5] flex items-center justify-center">
+        <span className="text-black/40 text-sm">Loading graph…</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="w-full h-screen bg-[#e6d9c5] flex items-center justify-center px-6">
+        <span className="text-red-700 text-sm">Graph error: {error}</span>
+      </div>
+    );
+  }
 
   return (
     <div ref={containerRef} className="w-full h-screen bg-[#e6d9c5] relative overflow-hidden">
       <div className="absolute top-0 left-0 right-0 z-20 flex items-center gap-3 px-5 py-4 bg-[#e8d7ae] border-b border-slate-800">
         <AnimatePresence>
-          {view !== 'domain' && (
+          {!isDomainView && (
             <motion.button key="back" initial={{ opacity: 0, x: -12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }} onClick={loadDomain} className="flex items-center gap-1.5 text-black hover:text-blue-600 text-sm font-medium">
               <ArrowLeft className="h-4 w-4" /> All domains
             </motion.button>
           )}
         </AnimatePresence>
         <span className="text-black font-bold text-lg">Codebase Map</span>
-        {view !== 'domain' && <><span className="text-slate-500">/</span><span className="text-blue-600 font-semibold capitalize">{view}</span></>}
+        {!isDomainView && <><span className="text-slate-500">/</span><span className="text-blue-600 font-semibold capitalize">{view}</span></>}
         {isPlaying && <span className="ml-auto text-xs text-blue-600 animate-pulse font-semibold">Simulating login…</span>}
       </div>
 
       <div className="absolute inset-0 pt-16">
+        <AnimatePresence>
+          {!isDomainView && (
+            <motion.button
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 12 }}
+              onClick={loadDomain}
+              className="absolute left-5 top-20 z-20 flex items-center gap-2 rounded-full border border-black bg-[#f4ead4] px-4 py-2 text-sm font-medium text-black shadow-[3px_3px_0px_0px_rgba(0,0,0,0.8)] transition hover:-translate-y-0.5 hover:text-blue-600"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Back to domains
+              <span className="text-xs text-slate-500">{currentSubmapFileCount} files</span>
+            </motion.button>
+          )}
+        </AnimatePresence>
         <ForceGraph2D
           ref={graphRef}
-          graphData={{ nodes: nodesRef.current, links: linksRef.current }}
+          graphData={graphState}
           width={dims.w} height={dims.h}
           backgroundColor={C.bg}
           nodeCanvasObject={(node, ctx, scale) => drawNode(node as GNode, ctx, scale, phaseRef.current)}
@@ -245,8 +446,10 @@ export function GraphViewerCanvas() {
             ctx.fillStyle = color; ctx.fillRect((n.x ?? 0) - w / 2, (n.y ?? 0) - h / 2, w, h);
           }}
           onNodeClick={handleNodeClick}
-          linkColor={(l: any) => l.isFaded ? '#47556944' : l.isAnimated ? '#06b6d4' : '#475569'}
-          linkWidth={(l: any) => l.isAnimated ? 2.5 : 1.5}
+          onNodeDragEnd={handleNodeDragEnd}
+          linkColor={(l: any) => l.isFaded ? '#64748b33' : l.isAnimated ? '#0f766e' : '#334155aa'}
+          linkWidth={(l: any) => l.isAnimated ? 2.4 : isDomainView ? 1.35 : 1.15}
+          linkCurvature={isDomainView ? 0.05 : 0.1}
           linkDirectionalParticles={(l: any) => l.isAnimated ? 1 : 0} // trigger render loop
           linkDirectionalParticleWidth={0} // hide default particle
           linkCanvasObjectMode={() => 'after'}
@@ -295,7 +498,15 @@ export function GraphViewerCanvas() {
           </motion.div>
         )}
       </AnimatePresence>
-      <ChatInput onSubmit={q => { if (q.toLowerCase().includes('login')) simulateLogin(); }} />
+      <ChatPanel
+        repoId={repoId}
+        scope={currentScope}
+        onQuerySubmitted={(query) => {
+          if (query.toLowerCase().includes('login')) {
+            simulateLogin();
+          }
+        }}
+      />
     </div>
   );
 }

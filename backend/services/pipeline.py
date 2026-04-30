@@ -71,6 +71,7 @@ async def _persist_domains(
         chunk_ids,
         parent_id,
     )
+    node["id"] = domain_id
 
     # Link vector rows to this domain
     if chunk_ids:
@@ -159,13 +160,13 @@ async def run_pipeline(repo_id: str, github_url: str) -> None:
         logger.info("[%s] building cluster tree", repo_id)
         tree = await build_cluster_tree(enriched, repo_id)
 
-        # ── 10. Store tree as JSONB (for fast graph endpoint) ────────────
-        logger.info("[%s] storing cluster tree", repo_id)
-        await asyncio.to_thread(store_cluster_tree, repo_id, tree)
-
-        # ── 11. Flatten tree → domains table (for scoped RAG) ────────────
+        # ── 10. Flatten tree → domains table (for scoped RAG) ────────────
         logger.info("[%s] persisting domains", repo_id)
         await _persist_domains(tree, repo_id, chunk_id_map)
+
+        # ── 11. Store tree as JSONB (for fast graph endpoint) ────────────
+        logger.info("[%s] storing cluster tree", repo_id)
+        await asyncio.to_thread(store_cluster_tree, repo_id, tree)
 
         # ── 12. Mark ready ───────────────────────────────────────────────
         await asyncio.to_thread(set_repo_status, repo_id, "ready")
