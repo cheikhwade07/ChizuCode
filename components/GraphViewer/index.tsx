@@ -19,7 +19,8 @@ import { ArrowLeft, Zap } from 'lucide-react';
 import { SubmapNode } from './SubmapNode';
 import { FileNode } from './FileNode';
 import { AnimatedEdge } from './AnimatedEdge';
-import { fetchLatestGraphData } from './adapter';
+import { fetchGraphData } from './adapter';
+
 import dagre from "@dagrejs/dagre";
 
 // ---------------------------------------------------------------------------
@@ -59,27 +60,9 @@ const edgeTypes = {
 // Graph builders
 // ---------------------------------------------------------------------------
 
-function buildDomainNodes(
+function buildDomainGraph(
     submaps: Submap[],
     onClickSubmap: (name: string) => void
-): Node[] {
-  const GAP = 380;
-  const startX = (800 - GAP * (submaps.length - 1)) / 2;
-  return submaps.map((sm, i) => ({
-    id: `submap-${sm.name}`,
-    type: 'submap',
-    position: { x: startX + i * GAP, y: 180 },
-    data: {
-      name: sm.name,
-      fileCount: sm.files.length,
-      onClick: () => onClickSubmap(sm.name),
-    },
-  }));
-}
-
-function buildDomainGraph(
-  submaps: Submap[],
-  onClickSubmap: (name: string) => void
 ): { nodes: Node[]; edges: Edge[] } {
 
   const nodes = submaps.map((sm) => ({
@@ -112,7 +95,6 @@ function buildDomainGraph(
   };
 }
 
-
 const FILE_NODE_WIDTH  = 260;
 const FILE_NODE_HEIGHT = 120;
 
@@ -144,8 +126,8 @@ function applyDagreLayout(
     return {
       ...node,
       position: {
-        x: pos.x - FILE_NODE_WIDTH / 2, // + Math.random() * 100,
-        y: pos.y - FILE_NODE_HEIGHT / 2, // + Math.random() * 100,
+        x: pos.x - FILE_NODE_WIDTH / 2,
+        y: pos.y - FILE_NODE_HEIGHT / 2,
       },
     };
   });
@@ -155,14 +137,10 @@ function buildSubmapGraph(submap: Submap): { nodes: Node[]; edges: Edge[] } {
   const files     = submap.files;
   const fileNames = new Set(files.map((f) => f.fileName));
 
-  const COLS  = Math.ceil(Math.sqrt(files.length + 1));
-  const H_GAP = 290;
-  const V_GAP = 180;
-
   const nodes: Node[] = files.map((file, i) => ({
     id:       file.fileName,
     type:     'file',
-    position: { x: (i % COLS) * H_GAP, y: Math.floor(i / COLS) * V_GAP },
+    position: { x: 0, y: 0 },
     data: {
       fileName:      file.fileName,
       directory:     file.directory,
@@ -199,29 +177,29 @@ function buildSubmapGraph(submap: Submap): { nodes: Node[]; edges: Edge[] } {
 // Main component
 // ---------------------------------------------------------------------------
 
-function GraphViewerInner() {
-  const [graphData, setGraphData]   = useState<GraphData | null>(null);
-  const [loading, setLoading]       = useState(true);
-  const [error, setError]           = useState<string | null>(null);
+function GraphViewerInner({ repoId }: { repoId: string }) {
+  const [graphData, setGraphData]       = useState<GraphData | null>(null);
+  const [loading, setLoading]           = useState(true);
+  const [error, setError]               = useState<string | null>(null);
   const [activeSubmap, setActiveSubmap] = useState<string | null>(null);
-  const [isPlaying, setIsPlaying]   = useState(false);
+  const [isPlaying, setIsPlaying]       = useState(false);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const { fitView } = useReactFlow();
 
-  // Load graph data from backend on mount
-    useEffect(() => {
-      fetchLatestGraphData()
-          .then(({ graphData }) => {
-            setGraphData(graphData);
-            setLoading(false);
-          })
-          .catch((err) => {
-            setError(err.message);
-            setLoading(false);
-          });
-    }, []);
+  // Fetch graph data
+  useEffect(() => {
+    fetchGraphData(repoId)
+        .then((data) => {
+          setGraphData(data);
+          setLoading(false);
+        })
+        .catch((err) => {
+          setError(err.message);
+          setLoading(false);
+        });
+  }, [repoId]);
 
   const submaps = graphData?.submaps ?? [];
 
@@ -229,11 +207,9 @@ function GraphViewerInner() {
     setActiveSubmap(null);
     setIsPlaying(false);
     const { nodes, edges } = buildDomainGraph(
-      submaps,
-      (name) => loadSubmapView(name)
+        submaps,
+        (name) => loadSubmapView(name)
     );
-    console.log("Edges for the domain nodes:");
-    console.log(edges);
     setNodes(nodes);
     setEdges(edges);
     setTimeout(() => fitView({ padding: 0.3, duration: 500 }), 50);
@@ -305,7 +281,6 @@ function GraphViewerInner() {
     }, 6000);
   };
 
-  // Loading state
   if (loading) {
     return (
         <div className="w-full h-screen bg-[#F5EFE6] flex items-center justify-center">
@@ -314,7 +289,6 @@ function GraphViewerInner() {
     );
   }
 
-  // Error state
   if (error) {
     return (
         <div className="w-full h-screen bg-[#F5EFE6] flex items-center justify-center">
@@ -324,37 +298,35 @@ function GraphViewerInner() {
   }
 
   return (
-    <div className="w-full h-screen bg-[#e6d9c5] relative overflow-hidden">
-      {/* Top bar */}
-      <div className="absolute top-0 left-0 right-0 z-20 flex items-center gap-3 px-5 py-4 bg-[#e8d7ae] backdrop-blur border-b border-slate-800">
-        {/* Back button */}
-        <AnimatePresence>
-          {activeSubmap && (
-            <motion.button
-              key="back"
-              initial={{ opacity: 0, x: -12 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -12 }}
-              transition={{ duration: 0.2 }}
-              onClick={loadDomainView}
-              className="flex items-center gap-1.5 text-black-400 hover:text-blue-200 transition-colors text-sm font-medium"
-            >
-              <ArrowLeft className="h-4 w-4" />
-              All domains
-            </motion.button>
-          )}
-        </AnimatePresence>
+      <div className="w-full h-screen bg-[#e6d9c5] relative overflow-hidden">
+        {/* Top bar */}
+        <div className="absolute top-0 left-0 right-0 z-20 flex items-center gap-3 px-5 py-4 bg-[#e8d7ae] backdrop-blur border-b border-slate-800">
+          <AnimatePresence>
+            {activeSubmap && (
+                <motion.button
+                    key="back"
+                    initial={{ opacity: 0, x: -12 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -12 }}
+                    transition={{ duration: 0.2 }}
+                    onClick={loadDomainView}
+                    className="flex items-center gap-1.5 text-black-400 hover:text-blue-200 transition-colors text-sm font-medium"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                  All domains
+                </motion.button>
+            )}
+          </AnimatePresence>
 
-        {/* Breadcrumb */}
-        <div className="flex items-center gap-2">
-          <span className="text-black font-bold text-lg leading-none">Codebase Map</span>
-          {activeSubmap && (
-            <>
-              <span className="text-slate-600">/</span>
-              <span className="text-black-400 font-semibold capitalize">{activeSubmap}</span>
-            </>
-          )}
-        </div>
+          <div className="flex items-center gap-2">
+            <span className="text-black font-bold text-lg leading-none">Codebase Map</span>
+            {activeSubmap && (
+                <>
+                  <span className="text-slate-600">/</span>
+                  <span className="text-black-400 font-semibold capitalize">{activeSubmap}</span>
+                </>
+            )}
+          </div>
 
           <div className="flex-1" />
 
@@ -370,35 +342,32 @@ function GraphViewerInner() {
           </motion.button>
         </div>
 
-      {/* Canvas */}
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        nodeTypes={nodeTypes}
-        edgeTypes={edgeTypes}
-        fitView
-        colorMode="light"
-        className="pt-16"
-        proOptions={{ hideAttribution: true }}
-      >
-        <Background gap={20} color="#000000" />
-        <Controls className="!bottom-6 !right-6 !left-auto !top-auto" />
-      </ReactFlow>
-
-      {/* Chat input — always visible at the bottom */}
-      {/*<ChatInput onSubmit={(query) => console.log('User query:', query)} />*/}
-    </div>
+        {/* Canvas */}
+        <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
+            fitView
+            colorMode="light"
+            className="pt-16"
+            proOptions={{ hideAttribution: true }}
+        >
+          <Background gap={20} color="#000000" />
+          <Controls className="!bottom-6 !right-6 !left-auto !top-auto" />
+        </ReactFlow>
+      </div>
   );
 }
 
 // ─── Public export wrapped in provider ───────────────────────────────────────
 
-export function GraphViewer() {
+export function GraphViewer({ repoId }: { repoId: string }) {
   return (
       <ReactFlowProvider>
-        <GraphViewerInner />
+        <GraphViewerInner repoId={repoId} />
       </ReactFlowProvider>
   );
 }

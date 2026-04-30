@@ -50,6 +50,7 @@ GOOGLE_CLOUD_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
 _gemini = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 GEMINI_MODEL = "gemini-2.5-flash-lite"
+GEMINI_TIMEOUT_SECONDS = 45
 
 
 # ---------------------------------------------------------------------------
@@ -69,11 +70,16 @@ def _infer_thresholds(files: list[dict]) -> tuple[float, int]:
         return 0.4, 3    # default
 
 def _group_by_path(files: list[dict]) -> list[list[dict]]:
-    """Group files by top-level directory path for frontend-heavy repos."""
+    """Group files by top-level directory. Root-level files share one group."""
     groups: dict[str, list[dict]] = {}
     for f in files:
         parts = f["file_path"].replace("\\", "/").split("/")
-        key = f"{parts[0]}/{parts[1]}" if len(parts) >= 2 else parts[0]
+        if len(parts) == 1:
+            key = "__root__"
+        elif len(parts) == 2:
+            key = parts[0]
+        else:
+            key = f"{parts[0]}/{parts[1]}"
         groups.setdefault(key, []).append(f)
     return list(groups.values())
 # ---------------------------------------------------------------------------
@@ -82,6 +88,7 @@ def _group_by_path(files: list[dict]) -> list[list[dict]]:
 
 _DEFAULT_DISTANCE_THRESHOLD = 0.4
 _DEFAULT_MAX_LEAF_FILES     = 3
+_DEFAULT_MAX_GROUP_SIZE     = 10
 MIN_CLUSTER_SIZE            = 2
 MAX_CLUSTER_SIZE            = 20
 
@@ -147,17 +154,24 @@ async def _call_gemini(prompt: str) -> dict:
     async with _SEMAPHORE:
         for attempt in range(3):
             try:
-                response = await _gemini.aio.models.generate_content(
-                    model=GEMINI_MODEL,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        temperature=0.2,
+                response = await asyncio.wait_for(
+                    _gemini.aio.models.generate_content(
+                        model=GEMINI_MODEL,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            temperature=0.2,
+                        ),
                     ),
+                    timeout=GEMINI_TIMEOUT_SECONDS,
                 )
                 text = (response.text or "").strip()
                 text = re.sub(r"^```json\s*", "", text)
                 text = re.sub(r"\s*```$", "", text)
                 return json.loads(text)
+            except asyncio.TimeoutError:
+                logger.warning("Gemini call timed out attempt %d", attempt + 1)
+                if attempt == 2:
+                    return {}
             except json.JSONDecodeError as e:
                 logger.warning("JSON parse failed attempt %d: %s", attempt + 1, e)
                 if attempt == 2:
@@ -217,11 +231,8 @@ def collapse_to_files(enriched_chunks: list[dict]) -> list[dict]:
 def _cluster_files(
         files: list[dict],
         distance_threshold: float = _DEFAULT_DISTANCE_THRESHOLD,
+        max_group_size: int = 10,
 ) -> list[list[dict]]:
-    """
-    Run HAC on summary_vectors and return groups of files.
-    Files without vectors are put in their own singleton group.
-    """
     valid   = [f for f in files if f["summary_vector"] is not None]
     invalid = [f for f in files if f["summary_vector"] is None]
 
@@ -247,11 +258,49 @@ def _cluster_files(
         groups.setdefault(label, []).append(file)
 
     result = list(groups.values())
+
+    # Force-split any group that exceeds max_group_size
+    final = []
+    for group in result:
+        if len(group) <= max_group_size:
+            final.append(group)
+        else:
+            #Fallback: split by directory instead of arbitrary chunks
+            dir_groups: dict[str, list[dict]] = {}
+            for f in group:
+                parts = f["file_path"].replace("\\", "/").split("/")
+                key = parts[0] if len(parts) > 1 else "__root__"
+                dir_groups.setdefault(key, []).append(f)
+
+            for dir_group in dir_groups.values():
+                if len(dir_group) <= max_group_size:
+                    final.append(dir_group)
+                else:
+                    # Directory group still too large — chunk it
+                    for i in range(0, len(dir_group), max_group_size):
+                        final.append(dir_group[i:i + max_group_size])
+
     if invalid:
-        result.extend([[f] for f in invalid])
-    return result
+        final.extend([[f] for f in invalid])
+    return final
 
 
+def _fallback_leaf_label(file: dict) -> str:
+    return file["file_path"].replace("\\", "/").split("/")[-1]
+
+
+def _fallback_cluster_label(files: list[dict], depth: int) -> str:
+    normalized_paths = [f["file_path"].replace("\\", "/") for f in files]
+    prefix_parts = [path.split("/")[:2] for path in normalized_paths if "/" in path]
+    if prefix_parts:
+        candidate = prefix_parts[0]
+        if all(parts[:len(candidate)] == candidate for parts in prefix_parts):
+            return " / ".join(candidate)
+    return f"Cluster {depth + 1}"
+
+
+def _fallback_cluster_summary(files: list[dict]) -> str:
+    return f"Contains {len(files)} related files."
 # ---------------------------------------------------------------------------
 # Step 3 — Recursive tree builder
 # ---------------------------------------------------------------------------
@@ -267,8 +316,8 @@ async def _build_leaf(file: dict) -> dict:
 
     return {
         "type": "leaf",
-        "label": gemini_data.get("label", file["file_path"].split("/")[-1]),
-        "summary": gemini_data.get("summary", file.get("summary", "")),
+        "label": gemini_data.get("label") or _fallback_leaf_label(file),
+        "summary": gemini_data.get("summary") or file.get("summary") or "Summary unavailable.",
         "file_path": file["file_path"],
         "language": file.get("language"),
         "file_type": file.get("file_type"),
@@ -283,6 +332,7 @@ async def _build_cluster(
         depth: int = 0,
         distance_threshold: float = _DEFAULT_DISTANCE_THRESHOLD,
         max_leaf_files: int = _DEFAULT_MAX_LEAF_FILES,
+        max_group_size: int = _DEFAULT_MAX_GROUP_SIZE,
 ) -> dict:
     """
     Recursively build an internal Quanta node.
@@ -294,14 +344,20 @@ async def _build_cluster(
     if len(files) <= max_leaf_files:
         children = list(await asyncio.gather(*[_build_leaf(f) for f in files]))
     else:
-        groups = _cluster_files(files, distance_threshold)
+        groups = _cluster_files(files, distance_threshold, max_group_size)
 
         if len(groups) == 1 and len(files) > max_leaf_files:
-            mid = len(files) // 2
-            groups = [files[:mid], files[mid:]]
+            path_groups = [group for group in _group_by_path(files) if group]
+            if 1 < len(path_groups) <= len(files):
+                groups = path_groups
+            else:
+                groups = [
+                    files[i:i + max_group_size]
+                    for i in range(0, len(files), max_group_size)
+                ]
 
         children = list(await asyncio.gather(*[
-            _build_cluster(group, depth + 1, distance_threshold, max_leaf_files)
+            _build_cluster(group, depth + 1, distance_threshold, max_leaf_files, max_group_size)
             for group in groups
         ]))
 
@@ -318,8 +374,8 @@ async def _build_cluster(
 
     return {
         "type": "cluster",
-        "label": gemini_data.get("label", f"Cluster {depth}"),
-        "summary": gemini_data.get("summary", ""),
+        "label": gemini_data.get("label") or _fallback_cluster_label(files, depth),
+        "summary": gemini_data.get("summary") or _fallback_cluster_summary(files),
         "edges": gemini_data.get("edges", []),
         "children": children,
     }
@@ -354,7 +410,7 @@ async def build_cluster_tree(
         groups = _group_by_path(files)
         logger.info("path-based grouping: %d top-level groups", len(groups))
     else:
-        groups = _cluster_files(files, distance_threshold)
+        groups = _cluster_files(files, distance_threshold, max_group_size=_DEFAULT_MAX_GROUP_SIZE)
         logger.info("HAC grouping: %d top-level groups", len(groups))
 
     if len(groups) == 1:
@@ -362,10 +418,16 @@ async def build_cluster_tree(
             files,
             distance_threshold=distance_threshold,
             max_leaf_files=max_leaf_files,
+            max_group_size=_DEFAULT_MAX_GROUP_SIZE,
         )
     else:
         children = list(await asyncio.gather(*[
-            _build_cluster(group, distance_threshold=distance_threshold, max_leaf_files=max_leaf_files)
+            _build_cluster(
+                group,
+                distance_threshold=distance_threshold,
+                max_leaf_files=max_leaf_files,
+                max_group_size=_DEFAULT_MAX_GROUP_SIZE,
+            )
             for group in groups
         ]))
 
@@ -381,8 +443,8 @@ async def build_cluster_tree(
 
         root = {
             "type": "cluster",
-            "label": gemini_data.get("label", "Codebase"),
-            "summary": gemini_data.get("summary", ""),
+            "label": gemini_data.get("label") or _fallback_cluster_label(files, 0),
+            "summary": gemini_data.get("summary") or _fallback_cluster_summary(files),
             "edges": gemini_data.get("edges", []),
             "children": children,
         }

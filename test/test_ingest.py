@@ -218,6 +218,7 @@ async def test_db_pipeline(enriched: list[dict]):
 # ---------------------------------------------------------------------------
 
 async def main():
+
     print("=" * 55)
     print("ingest pipeline test suite")
     print("=" * 55)

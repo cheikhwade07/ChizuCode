@@ -6,6 +6,9 @@ For each chunk this module:
   2. Embeds the summary via Gemini (semantic vector for clustering)
   3. Embeds the raw code via Voyage (syntactic vector for RAG retrieval)
 
+Multiple Gemini API keys are round-robined to multiply effective rate limits.
+Set GEMINI_API_KEY_1, GEMINI_API_KEY_2, ... in your .env (falls back to GEMINI_API_KEY).
+
 Dependencies:
     pip install google-genai voyageai python-dotenv
 """
@@ -13,6 +16,7 @@ Dependencies:
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 import os
 
@@ -29,29 +33,49 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY")
-
-if not GEMINI_API_KEY:
-    raise RuntimeError("GEMINI_API_KEY is not set")
 if not VOYAGE_API_KEY:
     raise RuntimeError("VOYAGE_API_KEY is not set")
 
-# New SDK — single client, model specified per call
-_gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-_voyage_client  = voyageai.AsyncClient(api_key=VOYAGE_API_KEY)
+# Collect all Gemini API keys — GEMINI_API_KEY_1, _2, _3, ... or fallback to GEMINI_API_KEY
+def _load_gemini_keys() -> list[str]:
+    keys = []
+    # numbered keys first
+    for i in range(1, 20):
+        k = os.getenv(f"GEMINI_API_KEY_{i}")
+        if k:
+            keys.append(k)
+    # fallback to base key
+    if not keys:
+        base = os.getenv("GEMINI_API_KEY")
+        if not base:
+            raise RuntimeError("No Gemini API key found. Set GEMINI_API_KEY or GEMINI_API_KEY_1, _2, ...")
+        keys.append(base)
+    logger.info("Loaded %d Gemini API key(s)", len(keys))
+    return keys
+
+_GEMINI_KEYS = _load_gemini_keys()
+
+# One client + one semaphore per key
+_gemini_clients  = [genai.Client(api_key=k) for k in _GEMINI_KEYS]
+_gen_semaphores  = [asyncio.Semaphore(20) for _ in _GEMINI_KEYS]
+_emb_semaphores  = [asyncio.Semaphore(20) for _ in _GEMINI_KEYS]
+
+# Round-robin counter — itertools.cycle is thread-safe for reads
+_key_cycle = itertools.cycle(range(len(_GEMINI_KEYS)))
+
+def _next_key_index() -> int:
+    return next(_key_cycle)
+
+_voyage_client = voyageai.AsyncClient(api_key=VOYAGE_API_KEY)
+_VOYAGE_SEMAPHORE = asyncio.Semaphore(10)
 
 GEMINI_GENERATE_MODEL = "gemini-2.5-flash-lite"
-GEMINI_EMBED_MODEL    = "gemini-embedding-001"   # stable, current
+GEMINI_EMBED_MODEL    = "gemini-embedding-001"
 VOYAGE_CODE_MODEL     = "voyage-code-2"
 
-MAX_SUMMARY_INPUT_CHARS = 12_000  # ~3K tokens
-MAX_EMBED_INPUT_CHARS   = 30_000  # voyage-code-2 supports 16K tokens
-
-# Semaphores — separate per endpoint
-_GEMINI_GENERATE_SEMAPHORE = asyncio.Semaphore(20)
-_GEMINI_EMBED_SEMAPHORE    = asyncio.Semaphore(20)
-_VOYAGE_SEMAPHORE          = asyncio.Semaphore(10)
+MAX_SUMMARY_INPUT_CHARS = 12_000
+MAX_EMBED_INPUT_CHARS   = 30_000
 
 
 # ---------------------------------------------------------------------------
@@ -106,10 +130,14 @@ async def _summarize(chunk: dict) -> str:
         content=content,
     )
 
-    async with _GEMINI_GENERATE_SEMAPHORE:
+    idx = _next_key_index()
+    client = _gemini_clients[idx]
+    sem = _gen_semaphores[idx]
+
+    async with sem:
         for attempt in range(3):
             try:
-                response = await _gemini_client.aio.models.generate_content(
+                response = await client.aio.models.generate_content(
                     model=GEMINI_GENERATE_MODEL,
                     contents=prompt,
                 )
@@ -117,29 +145,33 @@ async def _summarize(chunk: dict) -> str:
                 return text if text else _fallback_summary(chunk)
             except Exception as e:
                 if attempt < 2:
-                    wait = 2 ** attempt  # 1s, 2s, 4s
-                    logger.warning("retry %d for %s: %s", attempt + 1, chunk["file_path"], e)
+                    wait = 2 ** attempt
+                    logger.warning("retry %d for %s (key %d): %s", attempt + 1, chunk["file_path"], idx, e)
                     await asyncio.sleep(wait)
                 else:
-                    logger.warning("all retries failed for %s: %s", chunk["file_path"], e)
+                    logger.warning("all retries failed for %s (key %d): %s", chunk["file_path"], idx, e)
                     return _fallback_summary(chunk)
 
 
 async def _embed_summary(summary: str) -> list[float] | None:
-    async with _GEMINI_EMBED_SEMAPHORE:
+    idx = _next_key_index()
+    client = _gemini_clients[idx]
+    sem = _emb_semaphores[idx]
+
+    async with sem:
         try:
             result = await asyncio.to_thread(
-                _gemini_client.models.embed_content,
+                client.models.embed_content,
                 model=GEMINI_EMBED_MODEL,
                 contents=summary,
                 config=types.EmbedContentConfig(
                     task_type="RETRIEVAL_DOCUMENT",
-                    output_dimensionality=1536,   # add this line
+                    output_dimensionality=1536,
                 ),
             )
             return result.embeddings[0].values
         except Exception as e:
-            logger.warning("summary embed failed: %s", e)
+            logger.warning("summary embed failed (key %d): %s", idx, e)
             return None
 
 

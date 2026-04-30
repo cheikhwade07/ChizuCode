@@ -99,25 +99,15 @@ function collectLeaves(node: BackendTree): BackendLeaf[] {
     return node.children.flatMap(collectLeaves);
 }
 
-/**
- * Convert a single leaf node to a FileEntry.
- * Connections are derived from the leaf's internal edges (to fields).
- */
-function leafToFileEntry(leaf: BackendLeaf, allLeaves: BackendLeaf[]): FileEntry {
-    // Build a set of all sibling file labels for connection filtering
-    const siblingLabels = new Set(allLeaves.map((l) => l.label));
+function collectClusterEdges(node: BackendTree): BackendEdge[] {
+    if (node.type === "leaf") {
+        return [];
+    }
 
-    // Use internal edge "to" fields as connections, filtered to siblings only
-    const connection = leaf.edges
-        .map((e) => e.to)
-        .filter((to) => siblingLabels.has(to) && to !== leaf.label);
-
-    return {
-        fileName: leaf.label,
-        directory: leaf.file_path,
-        functionality: leaf.summary,
-        connection: [...new Set(connection)], // deduplicate
-    };
+    return [
+        ...node.edges,
+        ...node.children.flatMap(collectClusterEdges),
+    ];
 }
 
 /**
@@ -127,8 +117,25 @@ function leafToFileEntry(leaf: BackendLeaf, allLeaves: BackendLeaf[]): FileEntry
  */
 function clusterToSubmap(cluster: BackendCluster): Submap {
     const leaves = collectLeaves(cluster);
+    const leafLabelSet = new Set(leaves.map((leaf) => leaf.label));
+    const connectionMap = new Map<string, Set<string>>();
 
-    const files = leaves.map((leaf) => leafToFileEntry(leaf, leaves));
+    for (const leaf of leaves) {
+        connectionMap.set(leaf.label, new Set());
+    }
+
+    for (const edge of collectClusterEdges(cluster)) {
+        if (leafLabelSet.has(edge.from) && leafLabelSet.has(edge.to) && edge.from !== edge.to) {
+            connectionMap.get(edge.from)?.add(edge.to);
+        }
+    }
+
+    const files: FileEntry[] = leaves.map((leaf) => ({
+        fileName: leaf.label,
+        directory: leaf.file_path,
+        functionality: leaf.summary,
+        connection: [...(connectionMap.get(leaf.label) ?? [])],
+    }));
 
     return {
         name: cluster.label,
@@ -154,42 +161,95 @@ export function adaptBackendTree(tree: BackendTree): GraphData {
             submaps: [
                 {
                     name: tree.label,
-                    files: [leafToFileEntry(tree, [tree])],
+                    files: [
+                        {
+                            fileName: tree.label,
+                            directory: tree.file_path,
+                            functionality: tree.summary,
+                            connection: [],
+                        },
+                    ],
                     dependsOn: [],
                 },
             ],
         };
     }
 
-    const hasClusterChildren = tree.children.some((c) => c.type === "cluster");
+    const clusterChildren = tree.children.filter((child): child is BackendCluster => child.type === "cluster");
+    const leafChildren = tree.children.filter((child): child is BackendLeaf => child.type === "leaf");
 
-    if (hasClusterChildren) {
-        // Normal case: top-level clusters become submaps
-        const submaps = tree.children.map((child) => {
-            if (child.type === "cluster") return clusterToSubmap(child);
-            // Leaf directly under root — wrap as single-file submap
-            return {
-                name: child.label,
-                files: [leafToFileEntry(child, [child])],
-                dependsOn: [],
-            };
+    if (clusterChildren.length === 0) {
+        return { submaps: [clusterToSubmap(tree)] };
+    }
+
+    const submaps: Submap[] = clusterChildren.map(clusterToSubmap);
+
+    if (leafChildren.length > 0) {
+        submaps.push({
+            name: "Project Root",
+            files: leafChildren.map((leaf) => ({
+                fileName: leaf.label,
+                directory: leaf.file_path,
+                functionality: leaf.summary,
+                connection: [],
+            })),
+            dependsOn: [],
         });
+    }
 
-        // Wire inter-cluster edges from the root cluster's edge list.
-        // tree.edges entries use cluster labels as from/to identifiers.
-        const submapIndex = new Map(submaps.map((s) => [s.name, s]));
+    // submapIndex: submap name → submap object (direct cluster children)
+    // leafToSubmap: leaf label → containing submap name
+    //
+    // Root-level edges use individual leaf labels as endpoints. When orphan
+    // leaves are collapsed into "Project Root", those labels no longer match
+    // any submap name, so we resolve them via leafToSubmap.
+    const submapIndex = new Map(submaps.map((submap) => [submap.name, submap]));
+
+    const leafToSubmap = new Map<string, string>();
+    for (const submap of submaps) {
+        for (const file of submap.files) {
+            leafToSubmap.set(file.fileName, submap.name);
+        }
+    }
+
+    function resolveSubmapName(label: string): string | undefined {
+        if (submapIndex.has(label)) return label;          // cluster submap
+        return leafToSubmap.get(label);                    // orphan leaf → its container
+    }
+
+    for (const edge of tree.edges) {
+        const srcName = resolveSubmapName(edge.from);
+        const tgtName = resolveSubmapName(edge.to);
+        if (!srcName || !tgtName || srcName === tgtName) continue;
+        const source = submapIndex.get(srcName)!;
+        if (!source.dependsOn.includes(tgtName)) {
+            source.dependsOn.push(tgtName);
+        }
+    }
+
+    // Populate internal connections within "Project Root" using root-level
+    // edges whose both endpoints are orphan leaves.
+    if (leafChildren.length > 0) {
+        const rootLeafLabels = new Set(leafChildren.map((l) => l.label));
+        const rootConnectionMap = new Map<string, Set<string>>();
+        for (const leaf of leafChildren) rootConnectionMap.set(leaf.label, new Set());
+
         for (const edge of tree.edges) {
-            const source = submapIndex.get(edge.from);
-            if (source && submapIndex.has(edge.to)) {
-                source.dependsOn.push(edge.to);
+            if (rootLeafLabels.has(edge.from) && rootLeafLabels.has(edge.to) && edge.from !== edge.to) {
+                rootConnectionMap.get(edge.from)?.add(edge.to);
             }
         }
 
-        return { submaps };
+        const projectRootSubmap = submapIndex.get("Project Root")!;
+        projectRootSubmap.files = leafChildren.map((leaf) => ({
+            fileName: leaf.label,
+            directory: leaf.file_path,
+            functionality: leaf.summary,
+            connection: [...(rootConnectionMap.get(leaf.label) ?? [])],
+        }));
     }
 
-    // Root cluster has only leaves — treat root as single submap
-    return { submaps: [clusterToSubmap(tree)] };
+    return { submaps };
 }
 
 
@@ -280,7 +340,7 @@ export async function ingestAndFetch(
     onStatus?: (status: RepoStatus) => void
 ): Promise<{ repoId: string; graphData: GraphData }> {
     const { repo_id } = await ingestRepo(githubUrl);
-    await pollRepoStatus(repo_id, onStatus);
+    await pollRepoStatus(repo_id, onStatus, 5000, 1_200_000); // 20 min
     const graphData = await fetchGraphData(repo_id);
     return { repoId: repo_id, graphData };
 }
@@ -300,4 +360,10 @@ export async function queryRepo(
     });
     if (!res.ok) throw new Error(`Query failed: ${res.statusText}`);
     return res.json();
+}
+export async function checkRepoReady(repoId: string): Promise<boolean> {
+    const res = await fetch(`${API_BASE}/repo/${repoId}`);
+    if (!res.ok) return false;
+    const data = await res.json();
+    return data.status === "ready";
 }

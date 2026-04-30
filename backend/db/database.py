@@ -156,7 +156,7 @@ def create_repo(github_url: str, name: str) -> str:
                 INSERT INTO repos (github_url, name, status)
                 VALUES (%s, %s, 'pending')
                 ON CONFLICT (github_url) DO UPDATE
-                    SET status = 'pending', updated_at = now()
+                    SET name = EXCLUDED.name, updated_at = now()
                 RETURNING id
                 """,
                 (github_url, name),
@@ -174,6 +174,47 @@ def set_repo_status(repo_id: str, status: str, error: str | None = None) -> None
                 WHERE id = %s
                 """,
                 (status, error, repo_id),
+            )
+
+
+def get_repo_by_github_url(github_url: str) -> dict | None:
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM repos WHERE github_url = %s", (github_url,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def reset_repo_for_reingest(repo_id: str) -> None:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM domains WHERE repo_id = %s", (repo_id,))
+            cur.execute("DELETE FROM chunks WHERE repo_id = %s", (repo_id,))
+            cur.execute(
+                """
+                UPDATE repos
+                SET status = 'pending',
+                    error = NULL,
+                    chunk_count = 0,
+                    cluster_tree = NULL,
+                    updated_at = now()
+                WHERE id = %s
+                """,
+                (repo_id,),
+            )
+
+
+def fail_in_progress_repos() -> None:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE repos
+                SET status = 'failed',
+                    error = 'Ingestion interrupted by server restart',
+                    updated_at = now()
+                WHERE status IN ('pending', 'ingesting')
+                """
             )
 
 

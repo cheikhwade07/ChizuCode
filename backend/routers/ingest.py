@@ -19,11 +19,9 @@ from backend.services.chunker import chunk_files
 from backend.services.embedder import process_chunks
 from backend.db.database import (
     create_repo,
-    set_repo_status,
-    insert_chunks_batch,
-    insert_vectors_batch,
-    update_repo_chunk_count,
     get_repo,
+    get_repo_by_github_url,
+    reset_repo_for_reingest,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,7 +62,16 @@ async def ingest_repo(body: IngestRequest, background_tasks: BackgroundTasks):
     except RepoIngestionError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
-    repo_id = create_repo(github_url, name)
+    existing_repo = await asyncio.to_thread(get_repo_by_github_url, github_url)
+    if existing_repo and existing_repo["status"] == "ready" and existing_repo.get("cluster_tree") is not None:
+        return IngestResponse(repo_id=str(existing_repo["id"]), status="ready")
+
+    if existing_repo:
+        repo_id = str(existing_repo["id"])
+        await asyncio.to_thread(reset_repo_for_reingest, repo_id)
+    else:
+        repo_id = await asyncio.to_thread(create_repo, github_url, name)
+
     background_tasks.add_task(run_pipeline, repo_id, github_url)
 
     return IngestResponse(repo_id=repo_id, status="ingesting")
