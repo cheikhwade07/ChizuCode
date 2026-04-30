@@ -1,0 +1,10 @@
+{
+  "type": "workflow_animation",
+  "flow": {
+    "paths": [
+      ["userService.js", "authController.js", "serviceB.js", "serviceA.js"]
+    ],
+    "loop": false,
+    "step_duration_ms": 1000
+  }
+}

@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, X } from 'lucide-react';
 import { ChatInput } from './ChatInput';
 import graphData from '@/test.json';
+import workflowData from '@/workflow_test.json';
 
 // --- Types ---
 interface FileEntry { fileName: string; directory: string; functionality: string; connection: string[]; }
@@ -16,7 +17,11 @@ interface GNode {
   isHighlighted?: boolean; isFaded?: boolean;
   x?: number; y?: number;
 }
-interface GLink { source: string | GNode; target: string | GNode; isAnimated?: boolean; isFaded?: boolean; }
+interface GLink { 
+  source: string | GNode; target: string | GNode; 
+  isAnimated?: boolean; isFaded?: boolean; isActiveEdge?: boolean;
+  animStart?: number; animDur?: number; animForward?: boolean;
+}
 
 // --- Colors ---
 const C = { bg: '#e6d9c5', nodeBg: '#e8d7ae', border: '#000000', text: '#000000', hlBorder: '#1d4ed8', hlGlow: '#60a5fa', edge: '#888888', edgeActive: '#1d4ed8' };
@@ -173,20 +178,53 @@ export function GraphViewerCanvas() {
   useEffect(() => { loadDomain(); }, [loadDomain]);
 
   const triggerAnimation = useCallback(() => {
-    const activeIds = new Set(['userService.js', 'authController.js']);
+    const workflow = (workflowData as any).flow;
+    const path = workflow.paths[0]; 
+    const dur = workflow.step_duration_ms || 1000;
+
+    const activeIds = new Set(path);
     nodesRef.current.forEach(n => { n.isHighlighted = activeIds.has(n.id); n.isFaded = !activeIds.has(n.id); });
-    linksRef.current.forEach(l => {
-      const src = typeof l.source === 'string' ? l.source : (l.source as GNode).id;
-      const tgt = typeof l.target === 'string' ? l.target : (l.target as GNode).id;
-      const active = [src, tgt].sort().join('|') === ['userService.js', 'authController.js'].sort().join('|');
-      l.isAnimated = active; l.isFaded = !active;
-    });
+    
+    linksRef.current.forEach(l => { l.isAnimated = false; l.isActiveEdge = false; l.isFaded = true; });
     setIsPlaying(true);
-    setTimeout(() => {
-      nodesRef.current.forEach(n => { n.isHighlighted = false; n.isFaded = false; });
-      linksRef.current.forEach(l => { l.isAnimated = false; l.isFaded = false; });
-      setIsPlaying(false);
-    }, 6000);
+    
+    let step = 0;
+    
+    const runStep = () => {
+      if (step >= path.length - 1) {
+        setTimeout(() => {
+          nodesRef.current.forEach(n => { n.isHighlighted = false; n.isFaded = false; });
+          linksRef.current.forEach(l => { l.isAnimated = false; l.isActiveEdge = false; l.isFaded = false; });
+          setIsPlaying(false);
+        }, 1000); // linger at the end
+        return;
+      }
+      
+      const srcNode = path[step];
+      const tgtNode = path[step + 1];
+      const activeKey = [srcNode, tgtNode].sort().join('|');
+      
+      linksRef.current.forEach(l => {
+        const src = typeof l.source === 'string' ? l.source : (l.source as GNode).id;
+        const tgt = typeof l.target === 'string' ? l.target : (l.target as GNode).id;
+        const key = [src, tgt].sort().join('|');
+        if (key === activeKey) {
+          l.isAnimated = true;
+          l.isActiveEdge = true; // persists the cyan color
+          l.isFaded = false;
+          l.animStart = performance.now();
+          l.animDur = dur;
+          l.animForward = (src === srcNode); 
+        } else if (l.isAnimated) {
+          l.isAnimated = false; // stop the particle, but leave isActiveEdge true
+        }
+      });
+      
+      step++;
+      setTimeout(runStep, dur);
+    };
+    
+    runStep();
   }, []);
 
   const simulateLogin = useCallback(() => {
@@ -245,19 +283,22 @@ export function GraphViewerCanvas() {
             ctx.fillStyle = color; ctx.fillRect((n.x ?? 0) - w / 2, (n.y ?? 0) - h / 2, w, h);
           }}
           onNodeClick={handleNodeClick}
-          linkColor={(l: any) => l.isFaded ? '#47556944' : l.isAnimated ? '#06b6d4' : '#475569'}
-          linkWidth={(l: any) => l.isAnimated ? 2.5 : 1.5}
+          linkColor={(l: any) => l.isFaded ? '#47556944' : (l.isAnimated || l.isActiveEdge) ? '#06b6d4' : '#475569'}
+          linkWidth={(l: any) => (l.isAnimated || l.isActiveEdge) ? 2.5 : 1.5}
           linkDirectionalParticles={(l: any) => l.isAnimated ? 1 : 0} // trigger render loop
           linkDirectionalParticleWidth={0} // hide default particle
           linkCanvasObjectMode={() => 'after'}
           linkCanvasObject={(l: any, ctx, scale) => {
-            if (!l.isAnimated) return;
-            const start = l.source;
-            const end = l.target;
-            const p1 = (performance.now() % 1600) / 1600;
-            const p2 = (p1 - 300 / 1600 + 1) % 1;
+            if (!l.isAnimated || !l.animStart) return;
+            const start = l.animForward ? l.source : l.target;
+            const end = l.animForward ? l.target : l.source;
+            const t = performance.now() - l.animStart;
+            const dur = l.animDur || 1000;
+            const p1 = t / dur; // 0 to 1
+            const p2 = p1 - 300 / dur; // trails behind
             
             const drawDot = (p: number, r: number, color: string, glow: boolean) => {
+              if (p < 0 || p > 1) return;
               const x = start.x + (end.x - start.x) * p;
               const y = start.y + (end.y - start.y) * p;
               ctx.beginPath();
