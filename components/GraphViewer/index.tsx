@@ -14,7 +14,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, Zap } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 
 import { SubmapNode } from './SubmapNode';
 import { FileNode } from './FileNode';
@@ -331,20 +331,6 @@ function GraphViewerInner() {
           )}
         </div>
 
-        {/* Spacer */}
-        <div className="flex-1" />
-
-        {/* Simulate button */}
-        <motion.button
-          whileHover={{ scale: 1.04 }}
-          whileTap={{ scale: 0.97 }}
-          onClick={simulateLogin}
-          disabled={isPlaying}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-700 disabled:cursor-not-allowed text-white text-sm font-semibold shadow-lg transition-colors"
-        >
-          <Zap className="h-4 w-4" />
-          {isPlaying ? 'Simulating login…' : 'Simulate Login Flow'}
-        </motion.button>
       </div>
 
       {/* Canvas */}
@@ -364,8 +350,14 @@ function GraphViewerInner() {
         <Controls className="!bottom-6 !right-6 !left-auto !top-auto" />
       </ReactFlow>
 
-      {/* Chat input — always visible at the bottom */}
-      <ChatInput onSubmit={(query) => console.log('User query:', query)} />
+      {/* Chat input — triggers login simulation when query contains 'login' */}
+      <ChatInput
+        onSubmit={(query) => {
+          if (query.toLowerCase().includes('login')) {
+            simulateLogin();
+          }
+        }}
+      />
     </div>
   );
 }
