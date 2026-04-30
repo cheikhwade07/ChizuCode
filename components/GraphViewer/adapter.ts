@@ -353,7 +353,7 @@ export async function pollRepoStatus(
     repoId: string,
     onStatus?: (status: RepoStatus) => void,
     intervalMs = 3000,
-    timeoutMs = 600_000
+    timeoutMs = 1_800_000
 ): Promise<RepoStatus> {
     const start = Date.now();
 
@@ -370,7 +370,7 @@ export async function pollRepoStatus(
         await new Promise((r) => setTimeout(r, intervalMs));
     }
 
-    throw new Error("Ingestion timed out after 10 minutes");
+    throw new Error(`Ingestion timed out after ${Math.round(timeoutMs / 60_000)} minutes`);
 }
 
 /**

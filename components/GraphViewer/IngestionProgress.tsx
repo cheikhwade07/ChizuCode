@@ -6,32 +6,32 @@ const LAYERS = [
   {
     title: "Repository",
     subtitle: "GitHub URL accepted and clone started",
-    duration: 7000,
+    duration: 10000,
     items: ["clone", "scan", "filter"],
   },
   {
     title: "Code chunks",
     subtitle: "Files are split into readable pieces",
-    duration: 22000,
+    duration: 45000,
     items: ["walk files", "split code", "normalize paths"],
   },
   {
     title: "LLM summaries",
     subtitle: "Each chunk gets a concise explanation",
-    duration: 52000,
+    duration: 260000,
     items: ["summaries", "semantic vectors", "code vectors"],
   },
   {
     title: "Cluster map",
     subtitle: "Related files become labeled submaps",
-    duration: 32000,
+    duration: 220000,
     items: ["group files", "label domains", "connect nodes"],
   },
   {
-    title: "Postgres pgvector",
-    subtitle: "Chunks, vectors, and the tree are persisted",
-    duration: 12000,
-    items: ["chunks", "vectors", "domains"],
+    title: "Finalizing map",
+    subtitle: "Saving chunks, vectors, and the cluster tree",
+    duration: 70000,
+    items: ["save chunks", "save vectors", "save tree"],
   },
 ];
 
@@ -77,9 +77,12 @@ export function IngestionProgress({ chunkCount, repoName }: Props) {
     [activeLayerIndex]
   );
 
-  const timeProgress = (elapsed / totalDuration) * 98;
+  const timeProgress =
+    elapsed <= totalDuration
+      ? (elapsed / totalDuration) * 96
+      : 96 + Math.min(((elapsed - totalDuration) / 600000) * 3, 3);
   const chunkProgress = chunkCount > 0 ? Math.min(2 + chunkCount * 0.08, 12) : 0;
-  const progress = Math.min(Math.max(timeProgress, chunkProgress), 98);
+  const progress = Math.min(Math.max(timeProgress, chunkProgress), 99);
   const percent = progress.toFixed(1);
   const activeLayer = LAYERS[activeLayerIndex];
 

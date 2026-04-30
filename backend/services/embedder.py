@@ -76,6 +76,10 @@ VOYAGE_CODE_MODEL     = "voyage-code-2"
 
 MAX_SUMMARY_INPUT_CHARS = 12_000
 MAX_EMBED_INPUT_CHARS   = 30_000
+GEMINI_GENERATE_TIMEOUT_SECONDS = int(os.getenv("GEMINI_GENERATE_TIMEOUT_SECONDS", "45"))
+GEMINI_EMBED_TIMEOUT_SECONDS = int(os.getenv("GEMINI_EMBED_TIMEOUT_SECONDS", "45"))
+VOYAGE_EMBED_TIMEOUT_SECONDS = int(os.getenv("VOYAGE_EMBED_TIMEOUT_SECONDS", "45"))
+INGEST_BATCH_SIZE = int(os.getenv("INGEST_BATCH_SIZE", "40"))
 
 
 # ---------------------------------------------------------------------------
@@ -137,12 +141,22 @@ async def _summarize(chunk: dict) -> str:
     async with sem:
         for attempt in range(3):
             try:
-                response = await client.aio.models.generate_content(
-                    model=GEMINI_GENERATE_MODEL,
-                    contents=prompt,
+                response = await asyncio.wait_for(
+                    client.aio.models.generate_content(
+                        model=GEMINI_GENERATE_MODEL,
+                        contents=prompt,
+                    ),
+                    timeout=GEMINI_GENERATE_TIMEOUT_SECONDS,
                 )
                 text = (response.text or "").strip()
                 return text if text else _fallback_summary(chunk)
+            except asyncio.TimeoutError:
+                if attempt < 2:
+                    logger.warning("summary timed out for %s (key %d)", chunk["file_path"], idx)
+                    await asyncio.sleep(2 ** attempt)
+                else:
+                    logger.warning("all summary timeout retries failed for %s (key %d)", chunk["file_path"], idx)
+                    return _fallback_summary(chunk)
             except Exception as e:
                 if attempt < 2:
                     wait = 2 ** attempt
@@ -160,16 +174,22 @@ async def _embed_summary(summary: str) -> list[float] | None:
 
     async with sem:
         try:
-            result = await asyncio.to_thread(
-                client.models.embed_content,
-                model=GEMINI_EMBED_MODEL,
-                contents=summary,
-                config=types.EmbedContentConfig(
-                    task_type="RETRIEVAL_DOCUMENT",
-                    output_dimensionality=1536,
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.models.embed_content,
+                    model=GEMINI_EMBED_MODEL,
+                    contents=summary,
+                    config=types.EmbedContentConfig(
+                        task_type="RETRIEVAL_DOCUMENT",
+                        output_dimensionality=1536,
+                    ),
                 ),
+                timeout=GEMINI_EMBED_TIMEOUT_SECONDS,
             )
             return result.embeddings[0].values
+        except asyncio.TimeoutError:
+            logger.warning("summary embed timed out (key %d)", idx)
+            return None
         except Exception as e:
             logger.warning("summary embed failed (key %d): %s", idx, e)
             return None
@@ -179,12 +199,18 @@ async def _embed_code(raw_code: str) -> list[float] | None:
     text = _truncate(raw_code, MAX_EMBED_INPUT_CHARS)
     async with _VOYAGE_SEMAPHORE:
         try:
-            result = await _voyage_client.embed(
-                texts=[text],
-                model=VOYAGE_CODE_MODEL,
-                input_type="document",
+            result = await asyncio.wait_for(
+                _voyage_client.embed(
+                    texts=[text],
+                    model=VOYAGE_CODE_MODEL,
+                    input_type="document",
+                ),
+                timeout=VOYAGE_EMBED_TIMEOUT_SECONDS,
             )
             return result.embeddings[0]
+        except asyncio.TimeoutError:
+            logger.warning("code embed timed out")
+            return None
         except Exception as e:
             logger.warning("code embed failed: %s", e)
             return None
@@ -214,7 +240,7 @@ async def process_chunk(chunk: dict) -> dict:
     }
 
 
-async def process_chunks(chunks: list[dict], batch_size: int = 20) -> list[dict]:
+async def process_chunks(chunks: list[dict], batch_size: int = INGEST_BATCH_SIZE) -> list[dict]:
     """
     Process chunks in batches to avoid memory pressure.
     Order of results matches order of input.

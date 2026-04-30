@@ -73,8 +73,10 @@ async def _persist_domains(
     )
     node["id"] = domain_id
 
-    # Link vector rows to this domain
-    if chunk_ids:
+    # Link vectors only to leaf domains. Cluster-scoped retrieval still works
+    # through recursive domain lookup, and this avoids updating the same vector
+    # rows once for every ancestor while finalizing ingestion.
+    if node["type"] == "leaf" and chunk_ids:
         await asyncio.to_thread(update_vector_domain, chunk_ids, domain_id)
 
     # Recurse into children
@@ -125,6 +127,7 @@ async def run_pipeline(repo_id: str, github_url: str) -> None:
         logger.info("[%s] chunking files", repo_id)
         chunks = await asyncio.to_thread(chunk_files, files)
         logger.info("[%s] produced %d chunks", repo_id, len(chunks))
+        await asyncio.to_thread(update_repo_chunk_count, repo_id, len(chunks))
 
         # ── 5. Summarize + embed ─────────────────────────────────────────
         logger.info("[%s] summarizing and embedding chunks", repo_id)
@@ -152,9 +155,6 @@ async def run_pipeline(repo_id: str, github_url: str) -> None:
             for chunk_id, chunk in zip(chunk_ids, enriched)
         ]
         await asyncio.to_thread(insert_vectors_batch, vector_rows)
-
-        # ── 8. Update chunk count ────────────────────────────────────────
-        await asyncio.to_thread(update_repo_chunk_count, repo_id, len(enriched))
 
         # ── 9. Build cluster tree ────────────────────────────────────────
         logger.info("[%s] building cluster tree", repo_id)
