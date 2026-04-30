@@ -1,10 +1,11 @@
 {
   "type": "workflow_animation",
   "flow": {
+    "navigate_to_submap": "Authentication and Card Management",
     "paths": [
-      ["userService.js", "authController.js", "serviceB.js", "serviceA.js"]
+      ["Card Generation API", "Authentication Service", "User Management API", "Card Generation API"]
     ],
     "loop": false,
-    "step_duration_ms": 1000
+    "step_duration_ms": 1200
   }
 }

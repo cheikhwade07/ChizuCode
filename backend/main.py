@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.db.database import fail_in_progress_repos, get_latest_ready_repo
 from backend.routers.ingest import router as ingest_router
 from backend.routers.query import router as query_router
+from backend.routers.workflow import router as workflow_router
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -71,6 +72,7 @@ def latest_repo():
 
 app.include_router(ingest_router, tags=["ingestion"])
 app.include_router(query_router,  tags=["query"])
+app.include_router(workflow_router, tags=["workflow"])
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +94,7 @@ async def root():
             "GET /repo/{repo_id}",
             "GET /repo/{repo_id}/graph",
             "POST /repo/{repo_id}/query",
+            "POST /repo/{repo_id}/workflow",
         ],
     }
 

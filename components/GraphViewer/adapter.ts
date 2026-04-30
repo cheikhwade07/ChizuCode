@@ -79,6 +79,7 @@ export interface FileEntry {
     directory: string;
     functionality: string;
     connection: string[];
+    leafNodes?: BackendNode[];
 }
 
 export interface Submap {
@@ -102,10 +103,32 @@ export interface QuerySource {
     summary: string;
 }
 
+export interface WorkflowFlow {
+    navigate_to_submap?: string;
+    zoom_to_node?: string;
+    paths: string[][];
+    internal_flow?: {
+        node_label: string;
+        steps: string[];
+    };
+    loop: boolean;
+    step_duration_ms: number;
+}
+
+export interface WorkflowAnimation {
+    answer: string;
+    confidence: string;
+    sources: QuerySource[];
+    type: "workflow_animation";
+    flow: WorkflowFlow;
+}
+
 export interface QueryResult {
     answer: string;
     confidence: string;
     sources: QuerySource[];
+    type?: string;
+    flow?: WorkflowFlow;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -154,6 +177,7 @@ function clusterToSubmap(cluster: BackendCluster): Submap {
         directory: leaf.file_path,
         functionality: leaf.summary,
         connection: [...(connectionMap.get(leaf.label) ?? [])],
+        leafNodes: leaf.nodes,
     }));
 
     return {
@@ -190,6 +214,7 @@ export function adaptBackendTree(tree: BackendTree): GraphData {
                             directory: tree.file_path,
                             functionality: tree.summary,
                             connection: [],
+                            leafNodes: tree.nodes,
                         },
                     ],
                     dependsOn: [],
@@ -219,6 +244,7 @@ export function adaptBackendTree(tree: BackendTree): GraphData {
                 directory: leaf.file_path,
                 functionality: leaf.summary,
                 connection: [],
+                leafNodes: leaf.nodes,
             })),
             dependsOn: [],
         });
@@ -273,6 +299,7 @@ export function adaptBackendTree(tree: BackendTree): GraphData {
             directory: leaf.file_path,
             functionality: leaf.summary,
             connection: [...(rootConnectionMap.get(leaf.label) ?? [])],
+            leafNodes: leaf.nodes,
         }));
     }
 
@@ -417,6 +444,55 @@ export async function queryRepo(
                 : "No answer returned.",
             confidence: typeof payload?.confidence === "string" ? payload.confidence : "low",
             sources: Array.isArray(payload?.sources) ? payload.sources : [],
+            type: typeof payload?.type === "string" ? payload.type : undefined,
+            flow: payload?.flow,
+        };
+    } finally {
+        clearTimeout(timeoutId);
+        options?.signal?.removeEventListener("abort", abortFromCaller);
+    }
+}
+
+export async function queryWorkflow(
+    repoId: string,
+    question: string,
+    domainId?: string,
+    options?: { signal?: AbortSignal; timeoutMs?: number }
+): Promise<QueryResult> {
+    const controller = new AbortController();
+    const timeoutMs = options?.timeoutMs ?? 30000;
+    const timeoutId = setTimeout(() => controller.abort(new DOMException("Workflow request timed out", "AbortError")), timeoutMs);
+
+    const abortFromCaller = () => controller.abort(new DOMException("Workflow request aborted", "AbortError"));
+    options?.signal?.addEventListener("abort", abortFromCaller, { once: true });
+
+    try {
+        const body: { question: string; domain_id?: string } = { question };
+        if (domainId) {
+            body.domain_id = domainId;
+        }
+
+        const res = await fetch(`${API_BASE}/repo/${repoId}/workflow`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+        });
+
+        const payload = await res.json().catch(() => null);
+        if (!res.ok) {
+            const detail = typeof payload?.detail === "string" ? payload.detail : res.statusText;
+            throw new Error(detail || "Workflow request failed");
+        }
+
+        return {
+            answer: typeof payload?.answer === "string" && payload.answer.trim()
+                ? payload.answer
+                : "No workflow returned.",
+            confidence: typeof payload?.confidence === "string" ? payload.confidence : "low",
+            sources: Array.isArray(payload?.sources) ? payload.sources : [],
+            type: typeof payload?.type === "string" ? payload.type : undefined,
+            flow: payload?.flow,
         };
     } finally {
         clearTimeout(timeoutId);
