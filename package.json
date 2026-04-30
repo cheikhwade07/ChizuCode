@@ -9,9 +9,18 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@dagrejs/dagre": "^3.0.0",
+    "@types/d3-force": "^3.0.10",
+    "@xyflow/react": "^12.10.2",
+    "clsx": "^2.1.1",
+    "d3-force": "^3.0.0",
+    "framer-motion": "^12.38.0",
+    "lucide-react": "^1.12.0",
     "next": "16.2.4",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "react-force-graph-2d": "^1.29.1",
+    "tailwind-merge": "^3.5.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

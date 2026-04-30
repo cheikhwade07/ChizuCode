@@ -1,0 +1,112 @@
+{
+  "submaps": [
+    {
+      "name": "login",
+      "files": [
+        {
+          "fileName": "authController.js",
+          "directory": "/src/controllers/authController.js",
+          "functionality": "Handles user login requests, validates input, and returns authentication responses",
+          "connection": ["userService.js", "tokenUtil.js"]
+        },
+        {
+          "fileName": "userService.js",
+          "directory": "/src/services/userService.js",
+          "functionality": "Fetches user data from database and verifies credentials",
+          "connection": ["authController.js", "database.js"]
+        },
+        {
+          "fileName": "serviceA.js",
+          "directory": "/src/services/orderService.js",
+          "functionality": "Integrates with external order gateway and executes transactions",
+          "connection": ["orderController.js", "serviceB.js"]
+        },
+        {
+          "fileName": "serviceB.js",
+          "directory": "/src/services/orderService.js",
+          "functionality": "Integrates with external order gateway and executes transactions",
+          "connection": ["orderController.js", "authController.js"]
+        },
+        {
+          "fileName": "serviceC.js",
+          "directory": "/src/services/orderService.js",
+          "functionality": "Integrates with external order gateway and executes transactions",
+          "connection": ["authController.js", "serviceA.js"]
+        }
+      ],
+      "dependsOn": []
+    },
+    {
+      "name": "payment",
+      "files": [
+        {
+          "fileName": "paymentController.js",
+          "directory": "/src/controllers/paymentController.js",
+          "functionality": "Processes payment requests and handles payment responses",
+          "connection": ["paymentService.js", "orderService.js"]
+        },
+        {
+          "fileName": "paymentService.js",
+          "directory": "/src/services/paymentService.js",
+          "functionality": "Integrates with external payment gateway and executes transactions",
+          "connection": ["paymentController.js", "gatewayClient.js"]
+        }
+      ],
+      "dependsOn": ["login"]
+    },
+    {
+      "name": "order",
+      "files": [
+        {
+          "fileName": "orderController.js",
+          "directory": "/src/controllers/orderController.js",
+          "functionality": "Processes order requests and handles order responses",
+          "connection": ["orderService.js", "orderService.js"]
+        },
+        {
+          "fileName": "orderService.js",
+          "directory": "/src/services/orderService.js",
+          "functionality": "Integrates with external order gateway and executes transactions",
+          "connection": ["orderController.js", "gatewayClient.js"]
+        }
+      ],
+      "dependsOn": ["login"]
+    },
+    {
+      "name": "random 1",
+      "files": [
+        {
+          "fileName": "paymentController.js",
+          "directory": "/src/controllers/paymentController.js",
+          "functionality": "Processes payment requests and handles payment responses",
+          "connection": ["paymentService.js", "orderService.js"]
+        },
+        {
+          "fileName": "paymentService.js",
+          "directory": "/src/services/paymentService.js",
+          "functionality": "Integrates with external payment gateway and executes transactions",
+          "connection": ["paymentController.js", "gatewayClient.js"]
+        }
+      ],
+      "dependsOn": ["login"]
+    },
+    {
+      "name": "random 2",
+      "files": [
+        {
+          "fileName": "paymentController.js",
+          "directory": "/src/controllers/paymentController.js",
+          "functionality": "Processes payment requests and handles payment responses",
+          "connection": ["paymentService.js", "orderService.js"]
+        },
+        {
+          "fileName": "paymentService.js",
+          "directory": "/src/services/paymentService.js",
+          "functionality": "Integrates with external payment gateway and executes transactions",
+          "connection": ["paymentController.js", "gatewayClient.js"]
+        }
+      ],
+      "dependsOn": ["login"]
+    }
+  ]
+}
