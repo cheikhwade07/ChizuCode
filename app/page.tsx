@@ -178,10 +178,7 @@ export default function Home() {
           {/* Hero */}
           <section className="flex min-h-[calc(100vh-8rem)] items-center border-b border-[#B0A695] pb-12">
             <div className="mx-auto flex max-w-5xl flex-col items-center text-center">
-              <div className="inline-flex rounded-full border border-[#B0A695] bg-[#EBE3D5] px-4 py-2 text-sm font-medium text-[#5e554c]">
-                Learn a codebase before reading every file
-              </div>
-              <h1 className="mt-5 max-w-4xl text-5xl font-semibold leading-[0.95] tracking-[-0.07em] text-[#433b33] sm:text-6xl lg:text-[5.4rem]">
+              <h1 className="max-w-4xl text-5xl font-semibold leading-[0.95] tracking-[-0.07em] text-[#433b33] sm:text-6xl lg:text-[5.4rem]">
                 ChizuCode teaches your codebase back to you.
               </h1>
               <p className="mt-6 max-w-4xl text-xl leading-9 text-[#776B5D] sm:text-2xl">
