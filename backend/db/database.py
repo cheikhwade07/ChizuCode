@@ -23,18 +23,19 @@ if not DATABASE_URL:
 # Connection
 # ---------------------------------------------------------------------------
 
-def get_connection():
+def get_connection(register_vectors: bool = True):
     """
     Open a new psycopg2 connection to Neon.
     Always use via get_db() context manager — never call directly.
     """
     conn = psycopg2.connect(DATABASE_URL)
-    register_vector(conn)   # enables pgvector types on this connection
+    if register_vectors:
+        register_vector(conn)   # enables pgvector types on this connection
     return conn
 
 
 @contextmanager
-def get_db() -> Generator:
+def get_db(register_vectors: bool = True) -> Generator:
     """
     Context manager that yields a connection and commits on success,
     rolls back on any exception, and always closes the connection.
@@ -44,7 +45,7 @@ def get_db() -> Generator:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute("SELECT ...")
     """
-    conn = get_connection()
+    conn = get_connection(register_vectors=register_vectors)
     try:
         yield conn
         conn.commit()
@@ -137,7 +138,7 @@ CREATE INDEX IF NOT EXISTS idx_domains_parent_id ON domains(parent_id);
 
 def create_schema() -> None:
     """Run schema creation SQL — safe to call multiple times (IF NOT EXISTS)."""
-    with get_db() as conn:
+    with get_db(register_vectors=False) as conn:
         with conn.cursor() as cur:
             cur.execute(SCHEMA_SQL)
     logger.info("schema created / verified")

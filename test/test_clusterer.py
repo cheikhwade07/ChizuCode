@@ -1,4 +1,4 @@
-"""
+am in """
 test_clusterer.py — verify the clustering pipeline independently.
 
 Uses a small synthetic set of enriched chunks (no real repo needed).
