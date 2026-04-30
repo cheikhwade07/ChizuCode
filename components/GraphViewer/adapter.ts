@@ -314,6 +314,39 @@ export function adaptBackendTree(tree: BackendTree): GraphData {
 // ── API helpers ──────────────────────────────────────────────────────────────
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+const START_REQUEST_TIMEOUT_MS = 10_000;
+const STATUS_REQUEST_TIMEOUT_MS = 8_000;
+
+async function fetchWithTimeout(
+    url: string,
+    init: RequestInit = {},
+    timeoutMs: number,
+    label: string
+): Promise<Response> {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+        return await fetch(url, {
+            ...init,
+            signal: controller.signal,
+        });
+    } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+            throw new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)} seconds. Check that the backend is awake and reachable.`);
+        }
+        throw new Error(`${label} could not reach the backend at ${API_BASE}. Check NEXT_PUBLIC_API_URL, backend deployment, and CORS.`);
+    } finally {
+        window.clearTimeout(timeoutId);
+    }
+}
+
+async function readErrorDetail(res: Response, fallback: string): Promise<string> {
+    const payload = await res.json().catch(() => null);
+    if (typeof payload?.detail === "string") return payload.detail;
+    if (typeof payload?.error === "string") return payload.error;
+    return fallback;
+}
 
 export interface IngestResponse {
     repo_id: string;
@@ -323,12 +356,13 @@ export interface IngestResponse {
 export interface RepoStatus {
     id: string;
     status: "pending" | "ingesting" | "ready" | "failed";
+    phase?: string;
     chunk_count: number;
     error: string | null;
 }
 export async function getLatestRepoId(): Promise<string> {
-    const res = await fetch(`${API_BASE}/repo/latest`);
-    if (!res.ok) throw new Error(`Could not fetch latest repo: ${res.statusText}`);
+    const res = await fetchWithTimeout(`${API_BASE}/repo/latest`, {}, STATUS_REQUEST_TIMEOUT_MS, "Latest repo check");
+    if (!res.ok) throw new Error(await readErrorDetail(res, `Could not fetch latest repo: ${res.statusText}`));
     const data = await res.json();
     return data.repo_id;
 }
@@ -337,12 +371,12 @@ export async function getLatestRepoId(): Promise<string> {
  * Submit a GitHub repo for ingestion.
  */
 export async function ingestRepo(githubUrl: string): Promise<IngestResponse> {
-    const res = await fetch(`${API_BASE}/repo`, {
+    const res = await fetchWithTimeout(`${API_BASE}/repo`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ github_url: githubUrl }),
-    });
-    if (!res.ok) throw new Error(`Ingest failed: ${res.statusText}`);
+    }, START_REQUEST_TIMEOUT_MS, "Ingest request");
+    if (!res.ok) throw new Error(await readErrorDetail(res, `Ingest failed: ${res.statusText}`));
     return res.json();
 }
 
@@ -358,8 +392,8 @@ export async function pollRepoStatus(
     const start = Date.now();
 
     while (Date.now() - start < timeoutMs) {
-        const res = await fetch(`${API_BASE}/repo/${repoId}`);
-        if (!res.ok) throw new Error(`Status check failed: ${res.statusText}`);
+        const res = await fetchWithTimeout(`${API_BASE}/repo/${repoId}`, {}, STATUS_REQUEST_TIMEOUT_MS, "Status check");
+        if (!res.ok) throw new Error(await readErrorDetail(res, `Status check failed: ${res.statusText}`));
         const status: RepoStatus = await res.json();
 
         onStatus?.(status);
@@ -377,14 +411,14 @@ export async function pollRepoStatus(
  * Fetch the cluster tree and adapt it to the frontend schema.
  */
 export async function fetchGraphData(repoId: string): Promise<GraphData> {
-    const res = await fetch(`${API_BASE}/repo/${repoId}/graph`);
-    if (!res.ok) throw new Error(`Graph fetch failed: ${res.statusText}`);
+    const res = await fetchWithTimeout(`${API_BASE}/repo/${repoId}/graph`, {}, STATUS_REQUEST_TIMEOUT_MS, "Graph fetch");
+    if (!res.ok) throw new Error(await readErrorDetail(res, `Graph fetch failed: ${res.statusText}`));
     const tree: BackendTree = await res.json();
     return adaptBackendTree(tree);
 }
 export async function fetchLatestGraphData(): Promise<{ repoId: string; graphData: GraphData }> {
-    const res = await fetch(`${API_BASE}/repo/latest`);
-    if (!res.ok) throw new Error("No ready repo found");
+    const res = await fetchWithTimeout(`${API_BASE}/repo/latest`, {}, STATUS_REQUEST_TIMEOUT_MS, "Latest graph fetch");
+    if (!res.ok) throw new Error(await readErrorDetail(res, "No ready repo found"));
     const { repo_id } = await res.json();
     const graphData = await fetchGraphData(repo_id);
     return { repoId: repo_id, graphData };
@@ -500,8 +534,8 @@ export async function queryWorkflow(
     }
 }
 export async function checkRepoReady(repoId: string): Promise<boolean> {
-    const res = await fetch(`${API_BASE}/repo/${repoId}`);
-    if (!res.ok) return false;
+    const res = await fetchWithTimeout(`${API_BASE}/repo/${repoId}`, {}, STATUS_REQUEST_TIMEOUT_MS, "Repo readiness check");
+    if (!res.ok) throw new Error(await readErrorDetail(res, `Repo readiness check failed: ${res.statusText}`));
     const data = await res.json();
     return data.status === "ready";
 }

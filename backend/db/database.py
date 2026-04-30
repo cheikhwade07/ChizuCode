@@ -71,6 +71,8 @@ CREATE TABLE IF NOT EXISTS repos (
     name        TEXT,                    -- owner/repo extracted from URL
     status      TEXT NOT NULL DEFAULT 'pending',
                                          -- pending | ingesting | ready | failed
+    phase       TEXT NOT NULL DEFAULT 'pending',
+                                         -- current ingestion phase for polling UI
     error       TEXT,                    -- error message if status=failed
     chunk_count INT DEFAULT 0,
     cluster_tree JSONB,
@@ -133,6 +135,8 @@ CREATE TABLE IF NOT EXISTS domains (
 
 CREATE INDEX IF NOT EXISTS idx_domains_repo_id   ON domains(repo_id);
 CREATE INDEX IF NOT EXISTS idx_domains_parent_id ON domains(parent_id);
+
+ALTER TABLE repos ADD COLUMN IF NOT EXISTS phase TEXT NOT NULL DEFAULT 'pending';
 """
 
 
@@ -165,16 +169,35 @@ def create_repo(github_url: str, name: str) -> str:
             return str(cur.fetchone()[0])
 
 
-def set_repo_status(repo_id: str, status: str, error: str | None = None) -> None:
+def set_repo_status(
+    repo_id: str,
+    status: str,
+    error: str | None = None,
+    phase: str | None = None,
+) -> None:
+    next_phase = phase or status
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 UPDATE repos
-                SET status = %s, error = %s, updated_at = now()
+                SET status = %s, phase = %s, error = %s, updated_at = now()
                 WHERE id = %s
                 """,
-                (status, error, repo_id),
+                (status, next_phase, error, repo_id),
+            )
+
+
+def set_repo_phase(repo_id: str, phase: str) -> None:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE repos
+                SET phase = %s, updated_at = now()
+                WHERE id = %s
+                """,
+                (phase, repo_id),
             )
 
 
@@ -195,6 +218,7 @@ def reset_repo_for_reingest(repo_id: str) -> None:
                 """
                 UPDATE repos
                 SET status = 'pending',
+                    phase = 'pending',
                     error = NULL,
                     chunk_count = 0,
                     cluster_tree = NULL,
@@ -212,6 +236,7 @@ def fail_in_progress_repos() -> None:
                 """
                 UPDATE repos
                 SET status = 'failed',
+                    phase = 'failed',
                     error = 'Ingestion interrupted by server restart',
                     updated_at = now()
                 WHERE status IN ('pending', 'ingesting')

@@ -28,6 +28,7 @@ from backend.services.embedder import process_chunks
 from backend.services.clusterer import build_cluster_tree
 from backend.db.database import (
     set_repo_status,
+    set_repo_phase,
     insert_chunks_batch,
     insert_vectors_batch,
     update_repo_chunk_count,
@@ -108,15 +109,17 @@ async def run_pipeline(repo_id: str, github_url: str) -> None:
     clone_path = None
     try:
         # ── 1. Status: ingesting ─────────────────────────────────────────
-        await asyncio.to_thread(set_repo_status, repo_id, "ingesting")
+        await asyncio.to_thread(set_repo_status, repo_id, "ingesting", phase="starting")
         logger.info("[%s] starting pipeline for %s", repo_id, github_url)
 
         # ── 2. Clone ─────────────────────────────────────────────────────
         logger.info("[%s] cloning repo", repo_id)
+        await asyncio.to_thread(set_repo_phase, repo_id, "cloning")
         clone_path = await asyncio.to_thread(clone_repo, github_url)
 
         # ── 3. Walk files ────────────────────────────────────────────────
         logger.info("[%s] walking files", repo_id)
+        await asyncio.to_thread(set_repo_phase, repo_id, "walking")
         files = list(await asyncio.to_thread(walk_files, clone_path))
         logger.info("[%s] found %d files", repo_id, len(files))
 
@@ -125,17 +128,20 @@ async def run_pipeline(repo_id: str, github_url: str) -> None:
 
         # ── 4. Chunk ─────────────────────────────────────────────────────
         logger.info("[%s] chunking files", repo_id)
+        await asyncio.to_thread(set_repo_phase, repo_id, "chunking")
         chunks = await asyncio.to_thread(chunk_files, files)
         logger.info("[%s] produced %d chunks", repo_id, len(chunks))
         await asyncio.to_thread(update_repo_chunk_count, repo_id, len(chunks))
 
         # ── 5. Summarize + embed ─────────────────────────────────────────
         logger.info("[%s] summarizing and embedding chunks", repo_id)
+        await asyncio.to_thread(set_repo_phase, repo_id, "embedding")
         enriched = await process_chunks(chunks)
         logger.info("[%s] embedding complete", repo_id)
 
         # ── 6. Store chunks ──────────────────────────────────────────────
         logger.info("[%s] inserting chunks into DB", repo_id)
+        await asyncio.to_thread(set_repo_phase, repo_id, "storing_chunks")
         chunk_ids = await asyncio.to_thread(insert_chunks_batch, repo_id, enriched)
 
         # Build file_path → [chunk_ids] map for domain linking
@@ -154,27 +160,31 @@ async def run_pipeline(repo_id: str, github_url: str) -> None:
             }
             for chunk_id, chunk in zip(chunk_ids, enriched)
         ]
+        await asyncio.to_thread(set_repo_phase, repo_id, "storing_vectors")
         await asyncio.to_thread(insert_vectors_batch, vector_rows)
 
         # ── 9. Build cluster tree ────────────────────────────────────────
         logger.info("[%s] building cluster tree", repo_id)
+        await asyncio.to_thread(set_repo_phase, repo_id, "clustering")
         tree = await build_cluster_tree(enriched, repo_id)
 
         # ── 10. Flatten tree → domains table (for scoped RAG) ────────────
         logger.info("[%s] persisting domains", repo_id)
+        await asyncio.to_thread(set_repo_phase, repo_id, "storing_domains")
         await _persist_domains(tree, repo_id, chunk_id_map)
 
         # ── 11. Store tree as JSONB (for fast graph endpoint) ────────────
         logger.info("[%s] storing cluster tree", repo_id)
+        await asyncio.to_thread(set_repo_phase, repo_id, "storing_tree")
         await asyncio.to_thread(store_cluster_tree, repo_id, tree)
 
         # ── 12. Mark ready ───────────────────────────────────────────────
-        await asyncio.to_thread(set_repo_status, repo_id, "ready")
+        await asyncio.to_thread(set_repo_status, repo_id, "ready", phase="ready")
         logger.info("[%s] pipeline complete", repo_id)
 
     except Exception as e:
         logger.exception("[%s] pipeline failed: %s", repo_id, e)
-        await asyncio.to_thread(set_repo_status, repo_id, "failed", str(e))
+        await asyncio.to_thread(set_repo_status, repo_id, "failed", str(e), phase="failed")
 
     finally:
         if clone_path:
