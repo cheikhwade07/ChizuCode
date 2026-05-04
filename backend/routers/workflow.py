@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.db.database import get_repo
 from backend.services.workflow import build_workflow_response
@@ -38,14 +38,26 @@ class InternalFlow(BaseModel):
     steps: list[str]
 
 
-class WorkflowFlow(BaseModel):
+class WorkflowSegment(BaseModel):
     navigate_to_submap: str | None = None
+    navigate_to_submap_id: str | None = None
     zoom_to_node: str | None = None
     paths: list[list[str]]
     internal_flow: InternalFlow | None = None
     loop: bool = False
     step_duration_ms: int = 1000
 
+class WorkflowFlow(BaseModel):
+    # Multi-segment field — frontend iterates these in order.
+    segments: list[WorkflowSegment] = Field(default_factory=list)
+    # Legacy single-segment fields for backward compatibility.
+    navigate_to_submap: str | None = None
+    navigate_to_submap_id: str | None = None
+    zoom_to_node: str | None = None
+    paths: list[list[str]]
+    internal_flow: InternalFlow | None = None
+    loop: bool = False
+    step_duration_ms: int = 1000
 
 class WorkflowResponse(BaseModel):
     type: str = "workflow_animation"
@@ -68,9 +80,10 @@ async def workflow_repo_endpoint(repo_id: str, body: WorkflowRequest):
         raise HTTPException(status_code=409, detail=f"repo is not ready - current status: {repo['status']}")
 
     logger.info("workflow repo=%s domain=%s question=%s", repo_id, body.domain_id, body.question[:80])
-    result = build_workflow_response(
+    result = await build_workflow_response(
         question=body.question,
         repo=repo,
+        repo_id=repo_id,
         domain_id=body.domain_id,
     )
     return WorkflowResponse(**result)

@@ -3,7 +3,7 @@
 import { useEffect, useEffectEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { IngestionProgress } from "@/components/GraphViewer/IngestionProgress";
-import { ingestRepo, pollRepoStatus, checkRepoReady } from "@/components/GraphViewer/adapter";
+import { ApiError, getRepoQuota, ingestRepo, pollRepoStatus, type RepoQuota } from "@/components/GraphViewer/adapter";
 
 const submaps = [
   {
@@ -57,7 +57,7 @@ type IngestPhase =
     | { kind: "idle" }
     | { kind: "submitting" }
     | { kind: "polling"; repoId: string; chunkCount: number }
-    | { kind: "error"; message: string };
+    | { kind: "error"; message: string; status?: number };
 
 export default function Home() {
   const router = useRouter();
@@ -65,6 +65,7 @@ export default function Home() {
   const [repoInput, setRepoInput] = useState("");
   const [inputError, setInputError] = useState("");
   const [phase, setPhase] = useState<IngestPhase>({ kind: "idle" });
+  const [quota, setQuota] = useState<RepoQuota | null>(null);
 
   const totalFiles = submaps.reduce(
       (count, submap) => count + submap.files.length,
@@ -75,7 +76,7 @@ export default function Home() {
     if (!value) return "Enter a GitHub repository link before analyzing.";
     let url: URL;
     try {
-      url = new URL(value);
+      url = new URL(value.includes("://") ? value : `https://${value}`);
     } catch {
       return "Enter a valid GitHub repository link.";
     }
@@ -102,12 +103,7 @@ export default function Home() {
     try {
       const { repo_id } = await ingestRepo(value);
       localStorage.setItem("chizu_repo_id", repo_id);
-
-      const alreadyReady = await checkRepoReady(repo_id);
-      if (alreadyReady) {
-        router.push("/graph");
-        return;
-      }
+      void getRepoQuota().then(setQuota).catch(() => {});
 
       setPhase({ kind: "polling", repoId: repo_id, chunkCount: 0 });
       await pollRepoStatus(repo_id, (status) =>
@@ -115,8 +111,20 @@ export default function Home() {
       );
       router.push("/graph");
 
-    } catch (e: any) {
-      setPhase({ kind: "error", message: e.message ?? "Something went wrong." });
+    } catch (e: unknown) {
+      if (e instanceof ApiError && e.status === 429) {
+        setPhase({
+          kind: "error",
+          status: 429,
+          message: e.message || "Daily limit reached. Try again tomorrow.",
+        });
+        void getRepoQuota().then(setQuota).catch(() => {});
+        return;
+      }
+      setPhase({
+        kind: "error",
+        message: e instanceof Error ? e.message : "Something went wrong.",
+      });
     }
   };
 
@@ -137,6 +145,20 @@ export default function Home() {
     return () => {
       window.removeEventListener("scroll", handleScroll);
       delete document.documentElement.dataset.lastScrollY;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    getRepoQuota()
+        .then((nextQuota) => {
+          if (!cancelled) setQuota(nextQuota);
+        })
+        .catch(() => {
+          if (!cancelled) setQuota(null);
+        });
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -193,6 +215,12 @@ export default function Home() {
 
               {/* Input row */}
               <div className="mt-5 w-full max-w-4xl">
+                {phase.kind === "error" && phase.status === 429 && (
+                    <div className="mb-4 rounded-2xl border-[2px] border-[#9F5B4B] bg-[#F0D8CF] px-5 py-4 text-left text-[#6E2F24] shadow-[6px_6px_0_#000]">
+                      <p className="text-base font-semibold">Daily ingestion limit reached</p>
+                      <p className="mt-1 text-sm leading-6">{phase.message}</p>
+                    </div>
+                )}
                 <div className="flex flex-col gap-4 sm:flex-row">
                   <label className="flex min-h-16 flex-1 items-center gap-4 rounded-2xl border-[2px] border-[#B0A695] bg-white px-5 shadow-[6px_6px_0_#000]">
                     <span className="text-2xl text-[#776B5D]">○</span>
@@ -221,15 +249,21 @@ export default function Home() {
                   </button>
                 </div>
 
+                {quota && (
+                    <p className="mt-3 text-left text-sm text-[#776B5D]">
+                      {quota.used} of {quota.limit} repository ingestions used in the last 24 hours.
+                    </p>
+                )}
+
                 {/* Error / validation line */}
                 <p
                     className={`mt-3 text-left text-sm ${
-                        phase.kind === "error" || inputError
+                        (phase.kind === "error" && phase.status !== 429) || inputError
                             ? "text-[#b42318]"
                             : "text-transparent"
                     }`}
                 >
-                  {phase.kind === "error"
+                  {phase.kind === "error" && phase.status !== 429
                       ? phase.message
                       : inputError || "Validation message placeholder"}
                 </p>

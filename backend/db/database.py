@@ -136,6 +136,17 @@ CREATE TABLE IF NOT EXISTS domains (
 CREATE INDEX IF NOT EXISTS idx_domains_repo_id   ON domains(repo_id);
 CREATE INDEX IF NOT EXISTS idx_domains_parent_id ON domains(parent_id);
 
+-- repo_ingest_log: rolling IP quota for public demo usage
+CREATE TABLE IF NOT EXISTS repo_ingest_log (
+    id          SERIAL PRIMARY KEY,
+    ip_address  TEXT        NOT NULL,
+    repo_id     TEXT        NOT NULL,
+    ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ingest_log_ip_day
+    ON repo_ingest_log (ip_address, ingested_at);
+
 ALTER TABLE repos ADD COLUMN IF NOT EXISTS phase TEXT NOT NULL DEFAULT 'pending';
 """
 
@@ -275,6 +286,59 @@ def get_latest_ready_repo() -> dict | None:
             )
             row = cur.fetchone()
             return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Ingest quota helpers
+# ---------------------------------------------------------------------------
+
+def count_ingests_today(ip: str) -> int:
+    """Count how many repos this IP has ingested in the last rolling 24 hours."""
+    with get_db(register_vectors=False) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM repo_ingest_log
+                WHERE ip_address = %s
+                  AND ingested_at > NOW() - INTERVAL '24 hours'
+                """,
+                (ip,),
+            )
+            return int(cur.fetchone()[0])
+
+
+def log_ingest(ip: str, repo_id: str) -> None:
+    """Record a new ingest for this IP."""
+    with get_db(register_vectors=False) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO repo_ingest_log (ip_address, repo_id)
+                VALUES (%s, %s)
+                """,
+                (ip, repo_id),
+            )
+
+
+def has_recent_ingest_for_repo(ip: str, repo_id: str) -> bool:
+    """Return whether this IP already ingested this repo in the rolling 24-hour window."""
+    with get_db(register_vectors=False) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1
+                FROM repo_ingest_log
+                WHERE ip_address = %s
+                  AND repo_id = %s
+                  AND ingested_at > NOW() - INTERVAL '24 hours'
+                LIMIT 1
+                """,
+                (ip, repo_id),
+            )
+            return cur.fetchone() is not None
+
+
 # ---------------------------------------------------------------------------
 # Chunk helpers
 # ---------------------------------------------------------------------------

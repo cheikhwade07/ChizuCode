@@ -109,10 +109,9 @@ export function ChatPanel({ repoId, scope, isAnimating = false, onQuerySubmitted
   const handleQuery = async (query: string) => {
     if (isLoading) return;
 
-    // If the submap has no id, fall back to root-level (unscoped) query
     const scopeLabel = scope.label;
-    const domainId = scope.id ?? undefined;
-    const modeLabel = mode === "workflow" ? "Workflow" : "RAG";
+    const modeLabel = mode === "workflow" ? "Cross-map Workflow" : "Global RAG";
+    const requestScopeLabel = `${modeLabel} - viewing ${scopeLabel}`;
 
     const userMessage: Message = {
       id: crypto.randomUUID(),
@@ -120,7 +119,7 @@ export function ChatPanel({ repoId, scope, isAnimating = false, onQuerySubmitted
       content: query,
       sources: [],
       confidence: null,
-      scopeLabel: `${scopeLabel} - ${modeLabel}`,
+      scopeLabel: requestScopeLabel,
       kind: "message",
     };
     const pendingMessage: Message = {
@@ -129,7 +128,7 @@ export function ChatPanel({ repoId, scope, isAnimating = false, onQuerySubmitted
       content: "",
       sources: [],
       confidence: null,
-      scopeLabel: `${scopeLabel} - ${modeLabel}`,
+      scopeLabel: requestScopeLabel,
       pending: true,
       kind: "message",
     };
@@ -143,9 +142,9 @@ export function ChatPanel({ repoId, scope, isAnimating = false, onQuerySubmitted
 
     try {
       const queryFn = mode === "workflow" ? queryWorkflow : queryRepo;
-      const result = await queryFn(repoId, query, domainId, {
+      const result = await queryFn(repoId, query, undefined, {
         signal: abortRef.current.signal,
-        timeoutMs: 30000,
+        timeoutMs: mode === "workflow" ? 60000 : 30000,
       });
       if (!isMountedRef.current) return;
 
@@ -181,7 +180,7 @@ export function ChatPanel({ repoId, scope, isAnimating = false, onQuerySubmitted
             content: result.answer || "No answer returned.",
             sources: result.sources,
             confidence: result.confidence,
-            scopeLabel: `${scopeLabel} - ${modeLabel}`,
+            scopeLabel: requestScopeLabel,
             pending: false,
             kind: responseKind,
           },
@@ -213,7 +212,7 @@ export function ChatPanel({ repoId, scope, isAnimating = false, onQuerySubmitted
             content,
             sources: [],
             confidence: "low",
-            scopeLabel: `${scopeLabel} - ${modeLabel}`,
+            scopeLabel: requestScopeLabel,
             pending: false,
             kind: "message",
           },
@@ -355,7 +354,7 @@ export function ChatPanel({ repoId, scope, isAnimating = false, onQuerySubmitted
         </div>
         <ChatInput
           onSubmit={handleQuery}
-          scopeLabel={`${scope.label} - ${mode === "workflow" ? "Workflow" : "RAG"}`}
+          scopeLabel={mode === "workflow" ? "Cross-map workflow" : "Global RAG"}
           isLoading={isLoading}
           placeholder={mode === "workflow" ? "Describe a flow to animate..." : "Ask about this codebase..."}
         />

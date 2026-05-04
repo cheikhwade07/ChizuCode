@@ -26,6 +26,7 @@ def reset_schema() -> None:
             cur.execute(
                 """
                 DROP TABLE IF EXISTS
+                    repo_ingest_log,
                     domains,
                     vectors,
                     chunks,

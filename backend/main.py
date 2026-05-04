@@ -19,7 +19,7 @@ import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.db.database import fail_in_progress_repos, get_latest_ready_repo
+from backend.db.database import create_schema, fail_in_progress_repos, get_latest_ready_repo
 from backend.routers.ingest import router as ingest_router
 from backend.routers.query import router as query_router
 from backend.routers.workflow import router as workflow_router
@@ -105,6 +105,7 @@ async def root():
 
 @app.on_event("startup")
 async def on_startup():
+    create_schema()
     fail_in_progress_repos()
     logger.info("Codebase Explorer API starting up")
     logger.info("Docs available at /docs")

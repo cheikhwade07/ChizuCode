@@ -2,21 +2,28 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ForceGraph2D from 'react-force-graph-2d';
+import dagre from '@dagrejs/dagre';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, X } from 'lucide-react';
+import { ArrowLeft, HelpCircle, X } from 'lucide-react';
 import { forceCollide, forceX, forceY } from 'd3-force';
 import { ChatPanel } from './ChatPanel';
-import { fetchGraphData, type BackendNode, type WorkflowFlow } from './adapter';
+import {
+    fetchGraphData,
+    getRepoStatus,
+    type BackendCluster,
+    type BackendLeaf,
+    type BackendNode,
+    type BackendTree,
+    type GraphData,
+    type WorkflowFlow,
+    type WorkflowSegment,
+} from './adapter';
 import workflowData from '@/workflow_test.json'; // YOUR: workflow animation data
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-// TEAMMATE: FileEntry/Submap/GraphData include id fields for RAG scoping
-interface FileEntry { fileName: string; directory: string; functionality: string; connection: string[]; leafNodes?: BackendNode[]; }
-interface Submap { id?: string; name: string; files: FileEntry[]; dependsOn?: string[]; }
-interface GraphData { rootId?: string; rootLabel: string; submaps: Submap[]; }
 type WorkflowAnimationPayload = { flow: WorkflowFlow };
 interface InternalNodePos {
     id: string;
@@ -33,8 +40,9 @@ interface InternalParticle {
 }
 
 interface GNode {
-    id: string; type: 'submap' | 'file'; label: string;
+    id: string; type: 'cluster' | 'file'; label: string;
     fileCount?: number; directory?: string; functionality?: string;
+    treeNode?: BackendTree;
     isHighlighted?: boolean; isFaded?: boolean;
     x?: number; y?: number; fx?: number; fy?: number; vx?: number; vy?: number;
 }
@@ -147,6 +155,192 @@ function computeInternalPositions(node: GNode, steps: string[], leafNodes: Backe
     });
 
     return positions;
+}
+
+function isCluster(node: BackendTree | null | undefined): node is BackendCluster {
+    return node?.type === 'cluster';
+}
+
+function isLeaf(node: BackendTree | null | undefined): node is BackendLeaf {
+    return node?.type === 'leaf';
+}
+
+function collectLeaves(node: BackendTree): BackendLeaf[] {
+    if (node.type === 'leaf') return [node];
+    return node.children.flatMap(collectLeaves);
+}
+
+function collectClusters(node: BackendTree): BackendCluster[] {
+    if (node.type === 'leaf') return [];
+    return [node, ...node.children.flatMap(collectClusters)];
+}
+
+function countLeaves(node: BackendTree): number {
+    return node.type === 'leaf' ? 1 : node.children.reduce((sum, child) => sum + countLeaves(child), 0);
+}
+
+function findClusterPathByLabel(root: BackendTree | null, label: string): BackendCluster[] | null {
+    if (!isCluster(root)) return null;
+
+    const visit = (node: BackendCluster, path: BackendCluster[]): BackendCluster[] | null => {
+        const nextPath = [...path, node];
+        if (node.label === label) return nextPath;
+
+        for (const child of node.children) {
+            if (!isCluster(child)) continue;
+            const found = visit(child, nextPath);
+            if (found) return found;
+        }
+
+        return null;
+    };
+
+    return visit(root, []);
+}
+
+function findClusterPathById(root: BackendTree | null, id: string | undefined): BackendCluster[] | null {
+    if (!isCluster(root) || !id) return null;
+
+    const visit = (node: BackendCluster, path: BackendCluster[]): BackendCluster[] | null => {
+        const nextPath = [...path, node];
+        if (node.id === id) return nextPath;
+
+        for (const child of node.children) {
+            if (!isCluster(child)) continue;
+            const found = visit(child, nextPath);
+            if (found) return found;
+        }
+
+        return null;
+    };
+
+    return visit(root, []);
+}
+
+function findClusterPathContainingLeaf(root: BackendTree | null, leafLabel: string): BackendCluster[] | null {
+    if (!isCluster(root)) return null;
+
+    const visit = (node: BackendCluster, path: BackendCluster[]): BackendCluster[] | null => {
+        const nextPath = [...path, node];
+        for (const child of node.children) {
+            if (isLeaf(child) && child.label === leafLabel) return nextPath;
+            if (isCluster(child)) {
+                const found = visit(child, nextPath);
+                if (found) return found;
+            }
+        }
+        return null;
+    };
+
+    return visit(root, []);
+}
+
+function findLeafByLabel(root: BackendTree | null, label: string): BackendLeaf | null {
+    if (!root) return null;
+    if (isLeaf(root)) return root.label === label ? root : null;
+    for (const child of root.children) {
+        const found = findLeafByLabel(child, label);
+        if (found) return found;
+    }
+    return null;
+}
+
+function getTreeNodeGraphId(node: BackendTree): string {
+    return node.id ?? (isLeaf(node) ? node.file_path : node.label);
+}
+
+function resolveDirectChildId(cluster: BackendCluster, endpointLabel: string): string | null {
+    const direct = cluster.children.find(child => child.label === endpointLabel);
+    if (direct) return getTreeNodeGraphId(direct);
+
+    for (const child of cluster.children) {
+        if (isCluster(child)) {
+            const descendantLabels = collectLeaves(child).map(leaf => leaf.label);
+            const descendantClusterLabels = collectClusters(child).map(n => n.label);
+            if (descendantLabels.includes(endpointLabel) || descendantClusterLabels.includes(endpointLabel)) {
+                return getTreeNodeGraphId(child);
+            }
+        }
+    }
+
+    return null;
+}
+
+const NODE_WIDTH_CLUSTER = 220;
+const NODE_HEIGHT_CLUSTER = 120;
+const NODE_WIDTH_FILE = 160;
+const NODE_HEIGHT_FILE = 48;
+
+function computeDagrePositions(
+    nodes: GNode[],
+    links: GLink[],
+    isRootLayer: boolean
+): GNode[] {
+    if (nodes.length === 0) return nodes;
+
+    const g = new dagre.graphlib.Graph();
+    g.setDefaultEdgeLabel(() => ({}));
+    g.setGraph({
+        rankdir: 'LR',
+        nodesep: isRootLayer ? 80 : 60,
+        ranksep: isRootLayer ? 140 : 100,
+        marginx: 40,
+        marginy: 40,
+    });
+
+    nodes.forEach(node => {
+        const width = node.type === 'cluster' ? NODE_WIDTH_CLUSTER : NODE_WIDTH_FILE;
+        const height = node.type === 'cluster' ? NODE_HEIGHT_CLUSTER : NODE_HEIGHT_FILE;
+        g.setNode(node.id, { width, height });
+    });
+
+    links.forEach(link => {
+        const source = typeof link.source === 'string' ? link.source : (link.source as GNode).id;
+        const target = typeof link.target === 'string' ? link.target : (link.target as GNode).id;
+        if (g.hasNode(source) && g.hasNode(target)) {
+            g.setEdge(source, target);
+        }
+    });
+
+    try {
+        dagre.layout(g);
+    } catch {
+        return nodes;
+    }
+
+    const positioned = nodes
+        .map(node => {
+            const pos = g.node(node.id);
+            return pos ? { node, x: pos.x, y: pos.y } : null;
+        })
+        .filter((item): item is { node: GNode; x: number; y: number } => item !== null);
+
+    if (positioned.length === 0) return nodes;
+
+    const minX = Math.min(...positioned.map(item => item.x));
+    const maxX = Math.max(...positioned.map(item => item.x));
+    const minY = Math.min(...positioned.map(item => item.y));
+    const maxY = Math.max(...positioned.map(item => item.y));
+    const offsetX = (minX + maxX) / 2;
+    const offsetY = (minY + maxY) / 2;
+    const positionById = new Map(positioned.map(item => [item.node.id, item]));
+
+    return nodes.map(node => {
+        const pos = positionById.get(node.id);
+        if (!pos) return node;
+
+        const x = pos.x - offsetX;
+        const y = pos.y - offsetY;
+        return {
+            ...node,
+            x,
+            y,
+            fx: x,
+            fy: y,
+            vx: 0,
+            vy: 0,
+        };
+    });
 }
 
 function drawExpandedNode(
@@ -281,7 +475,7 @@ function drawNode(
         return;
     }
 
-    const isSubmap = node.type === 'submap';
+    const isSubmap = node.type === 'cluster';
     const w = isSubmap ? 220 : 160;
     const h = isSubmap ? 120 : 48;
     const x = (node.x ?? 0) - w / 2;
@@ -321,7 +515,7 @@ function drawNode(
         titleLines.forEach((line, i) => ctx.fillText(line, x + 16, y + 66 + i * 18));
 
         ctx.font = '600 11px sans-serif'; ctx.fillStyle = C.muted; ctx.textBaseline = 'alphabetic';
-        ctx.fillText('Click to explore this domain >', x + 16, y + 104);
+        ctx.fillText('Click to explore this layer >', x + 16, y + 104);
     } else {
         // File node
         ctx.fillStyle = node.isHighlighted ? C.control : C.nodeBg;
@@ -341,55 +535,64 @@ function drawNode(
 export function GraphViewerCanvas({ repoId }: { repoId: string }) {
     // TEAMMATE: live data from backend
     const [graphData, setGraphData] = useState<GraphData | null>(null);
-    const [graphState, setGraphState] = useState<{ nodes: GNode[]; links: GLink[] }>({ nodes: [], links: [] });
+    const [graphState, setGraphState] = useState<{ nodes: GNode[]; links: GLink[]; _render?: number }>({ nodes: [], links: [] });
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
-    const [view, setView] = useState<string>('domain');
+    const [clusterStack, setClusterStack] = useState<BackendCluster[]>([]);
     const [isPlaying, setIsPlaying] = useState(false);
     const [expandedNodeId, setExpandedNodeId] = useState<string | null>(null);
     const [internalNodes, setInternalNodes] = useState<Record<string, InternalNodePos>>({});
     const [activeInternalIds, setActiveInternalIds] = useState<Set<string>>(new Set());
     const [internalParticle, setInternalParticle] = useState<InternalParticle | null>(null);
     const [popup, setPopup] = useState<{ node: GNode; sx: number; sy: number } | null>(null);
+    const [repoName, setRepoName] = useState<string | null>(null);
+    const [showHelp, setShowHelp] = useState(false);
     const [dims, setDims] = useState({ w: 800, h: 600 });
 
     const nodesRef = useRef<GNode[]>([]);
     const linksRef = useRef<GLink[]>([]);
     const phaseRef = useRef(0);
+    const renderCountRef = useRef(0);
     const graphRef = useRef<any>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const isPlayingRef = useRef(false);
     const isMountedRef = useRef(true);
     const currentAnimationRef = useRef<symbol | null>(null);
     const engineStopResolverRef = useRef<(() => void) | null>(null);
+    const suppressNextInitialFitRef = useRef(false);
+    const fitTimeoutRef = useRef<number | null>(null);
     const expandedNodeIdRef = useRef<string | null>(null);
     const internalNodesRef = useRef<Record<string, InternalNodePos>>({});
     const activeInternalIdsRef = useRef<Set<string>>(new Set());
     const internalParticleRef = useRef<InternalParticle | null>(null);
 
-    const submaps = graphData?.submaps ?? [];
-    const isDomainView = view === 'domain';
+    const rootCluster = useMemo(() => (isCluster(graphData) ? graphData : null), [graphData]);
+    const currentCluster = clusterStack.length > 0 ? clusterStack[clusterStack.length - 1] : rootCluster;
+    const isDomainView = Boolean(rootCluster && currentCluster?.label === rootCluster.label);
+    const canGoBack = clusterStack.length > 1;
+    const currentLayerCount = currentCluster?.children.length ?? (graphData ? 1 : 0);
+    const currentLeafCount = currentCluster ? countLeaves(currentCluster) : (graphData ? countLeaves(graphData) : 0);
+    const totalFileCount = graphData ? countLeaves(graphData) : 0;
+    const breadcrumb = clusterStack.map(cluster => cluster.label);
+    const clusters = useMemo(() => graphData ? collectClusters(graphData) : [], [graphData]);
 
-    const currentSubmap = useMemo(
-        () => (isDomainView ? null : submaps.find(s => s.name === view) ?? null),
-        [isDomainView, submaps, view]
-    );
-
-    const currentSubmapFileCount = useMemo(
-        () => isDomainView ? 0 : (submaps.find(s => s.name === view)?.files.length ?? 0),
-        [isDomainView, submaps, view]
-    );
-
-    // TEAMMATE: currentScope drives RAG domain_id for ChatPanel
+    // Current view label is shown in chat, but chat requests are global by default.
     const currentScope = useMemo(() => {
-        if (!graphData || isDomainView) return { id: undefined, label: 'Root' };
-        if (!currentSubmap || currentSubmap.name === 'Project Root') return { id: undefined, label: 'Root' };
-        return { id: currentSubmap.id, label: currentSubmap.name };
-    }, [currentSubmap, graphData, isDomainView]);
+        if (!graphData || !currentCluster || isDomainView) return { id: undefined, label: 'Root' };
+        return { id: currentCluster.id, label: currentCluster.label };
+    }, [currentCluster, graphData, isDomainView]);
 
     const forceCanvasRender = useCallback(() => {
-        setGraphState(({ nodes, links }) => ({ nodes: [...nodes], links: [...links] }));
+        renderCountRef.current += 1;
+        setGraphState(prev => ({ ...prev, _render: renderCountRef.current }));
+    }, []);
+
+    const clearFitTimeout = useCallback(() => {
+        if (fitTimeoutRef.current !== null) {
+            window.clearTimeout(fitTimeoutRef.current);
+            fitTimeoutRef.current = null;
+        }
     }, []);
 
     useEffect(() => { expandedNodeIdRef.current = expandedNodeId; }, [expandedNodeId]);
@@ -441,7 +644,13 @@ export function GraphViewerCanvas({ repoId }: { repoId: string }) {
             n.vx = 0;
             n.vy = 0;
         });
-        graphRef.current?.d3AlphaTarget?.(0);
+        if (graphRef.current) {
+            graphRef.current.d3AlphaTarget?.(0);
+            graphRef.current.d3Force?.('charge')?.strength?.(0);
+            graphRef.current.d3Force?.('x')?.strength?.(0);
+            graphRef.current.d3Force?.('y')?.strength?.(0);
+            graphRef.current.d3Force?.('collision')?.radius?.(0);
+        }
         forceCanvasRender();
     }, [forceCanvasRender]);
 
@@ -454,17 +663,18 @@ export function GraphViewerCanvas({ repoId }: { repoId: string }) {
         });
     }, []);
 
-    const focusNodes = useCallback((nodeIds: string[], zoom = 1.12, duration = 650) => {
-        if (!graphRef.current || nodeIds.length === 0) return;
+    const focusNodes = useCallback((nodeIds: string[], zoom = 1.06, duration = 650): number => {
+        if (!graphRef.current || nodeIds.length === 0) return 0;
 
         const selected = nodesRef.current.filter(n => nodeIds.includes(n.id));
-        if (selected.length === 0) return;
+        if (selected.length === 0) return 0;
 
         const centerX = selected.reduce((sum, node) => sum + (node.x ?? 0), 0) / selected.length;
         const centerY = selected.reduce((sum, node) => sum + (node.y ?? 0), 0) / selected.length;
 
         graphRef.current.centerAt(centerX, centerY, duration);
         graphRef.current.zoom(zoom, duration);
+        return duration;
     }, []);
 
     // ---------------------------------------------------------------------------
@@ -477,6 +687,18 @@ export function GraphViewerCanvas({ repoId }: { repoId: string }) {
         fetchGraphData(repoId)
             .then(data => { if (!cancelled) { setGraphData(data); setLoading(false); } })
             .catch((err: Error) => { if (!cancelled) { setError(err.message); setLoading(false); } });
+        return () => { cancelled = true; };
+    }, [repoId]);
+
+    useEffect(() => {
+        let cancelled = false;
+        getRepoStatus(repoId)
+            .then(status => {
+                if (!cancelled) setRepoName(status.name ?? status.github_url ?? null);
+            })
+            .catch(() => {
+                if (!cancelled) setRepoName(null);
+            });
         return () => { cancelled = true; };
     }, [repoId]);
 
@@ -505,8 +727,9 @@ export function GraphViewerCanvas({ repoId }: { repoId: string }) {
             currentAnimationRef.current = null;
             isPlayingRef.current = false;
             engineStopResolverRef.current = null;
+            clearFitTimeout();
         };
-    }, []);
+    }, [clearFitTimeout]);
 
     // Phase loop for highlight glow
     useEffect(() => {
@@ -520,7 +743,12 @@ export function GraphViewerCanvas({ repoId }: { repoId: string }) {
         if (!isPlaying && !expandedNodeId) return;
         let raf: number;
         const tick = () => {
-            forceCanvasRender();
+            const graph = graphRef.current;
+            if (typeof graph?.refresh === 'function') {
+                graph.refresh();
+            } else {
+                forceCanvasRender();
+            }
             raf = requestAnimationFrame(tick);
         };
         raf = requestAnimationFrame(tick);
@@ -531,22 +759,47 @@ export function GraphViewerCanvas({ repoId }: { repoId: string }) {
     // applyGraph — TEAMMATE forces (collision, x, y) + YOUR charge/distance values
     // ---------------------------------------------------------------------------
 
-    const applyGraph = (nodes: GNode[], links: GLink[], isDomain: boolean = false) => {
-        nodesRef.current = nodes;
+    const applyGraph = (nodes: GNode[], links: GLink[], isRootLayer: boolean = false) => {
+        const shouldAutoFit = !suppressNextInitialFitRef.current && !isPlayingRef.current;
+        suppressNextInitialFitRef.current = false;
+        clearFitTimeout();
+
+        const positionedNodes = computeDagrePositions(nodes, links, isRootLayer);
+
+        nodesRef.current = positionedNodes;
         linksRef.current = links;
-        setGraphState({ nodes, links });
-        graphRef.current?.d3ReheatSimulation();
+        setGraphState({ nodes: positionedNodes, links });
+
+        if (!isPlayingRef.current) {
+            graphRef.current?.d3ReheatSimulation();
+        }
+
         if (graphRef.current) graphRef.current.zoom(0.8, 0);
+
+        if (shouldAutoFit) {
+            fitTimeoutRef.current = window.setTimeout(() => {
+                fitTimeoutRef.current = null;
+                if (!graphRef.current || isPlayingRef.current) return;
+                graphRef.current.zoomToFit(600, isRootLayer ? 80 : 90);
+            }, 120);
+        }
 
         setTimeout(() => {
             if (!graphRef.current) return;
-            // YOUR: stronger charge/distance values for better spacing
-            graphRef.current.d3Force('charge').strength(isDomain ? -2200 : -440);
-            graphRef.current.d3Force('link').distance(isDomain ? 165 : 94);
-            // TEAMMATE: collision + centering forces
-            graphRef.current.d3Force('collision', forceCollide(isDomain ? 112 : 76));
-            graphRef.current.d3Force('x', forceX(0).strength(isDomain ? 0.04 : 0.13));
-            graphRef.current.d3Force('y', forceY(0).strength(isDomain ? 0.04 : 0.13));
+            graphRef.current.d3Force('charge').strength(isRootLayer ? -2200 : -560);
+            graphRef.current.d3Force('link').distance(isRootLayer ? 165 : 108);
+            graphRef.current.d3Force('collision', forceCollide(isRootLayer ? 112 : 82));
+            graphRef.current.d3Force('x', forceX(0).strength(isRootLayer ? 0.04 : 0.11));
+            graphRef.current.d3Force('y', forceY(0).strength(isRootLayer ? 0.04 : 0.11));
+
+            if (!isPlayingRef.current) {
+                setTimeout(() => {
+                    nodesRef.current.forEach(node => {
+                        node.fx = undefined;
+                        node.fy = undefined;
+                    });
+                }, 300);
+            }
         }, 10);
     };
 
@@ -554,61 +807,117 @@ export function GraphViewerCanvas({ repoId }: { repoId: string }) {
     // Navigation
     // ---------------------------------------------------------------------------
 
-    const loadDomain = useCallback((preservePlayback = false) => {
-        setView('domain');
-        if (!preservePlayback) setIsPlaying(false);
-        setPopup(null);
-        updateExpandedNodeId(null);
-        updateInternalNodes({});
-        updateActiveInternalIds(new Set());
-        updateInternalParticle(null);
-        const nodes = submaps.map(sm => ({
-            id: sm.name, type: 'submap' as const, label: sm.name, fileCount: sm.files.length
-        }));
-        const links: GLink[] = [];
-        submaps.forEach(sm => sm.dependsOn?.forEach(t => links.push({ source: sm.name, target: t })));
-        applyGraph(nodes, links, true);
-    }, [submaps, updateActiveInternalIds, updateExpandedNodeId, updateInternalNodes, updateInternalParticle]);
+    const buildLayerGraph = useCallback((cluster: BackendCluster | null) => {
+        if (!cluster) {
+            return { nodes: [], links: [] };
+        }
 
-    const loadSubmap = useCallback((name: string, preservePlayback = false) => {
-        const sm = submaps.find(s => s.name === name);
-        if (!sm) return;
-        setView(name);
-        if (!preservePlayback) setIsPlaying(false);
-        setPopup(null);
-        updateExpandedNodeId(null);
-        updateInternalNodes({});
-        updateActiveInternalIds(new Set());
-        updateInternalParticle(null);
-        const names = new Set(sm.files.map(f => f.fileName));
-        const nodes = sm.files.map(f => ({
-            id: f.fileName, type: 'file' as const,
-            label: f.fileName, directory: f.directory, functionality: f.functionality
-        }));
+        const nodes: GNode[] = cluster.children.map(child => {
+            if (isCluster(child)) {
+                return {
+                    id: getTreeNodeGraphId(child),
+                    type: 'cluster' as const,
+                    label: child.label,
+                    fileCount: countLeaves(child),
+                    functionality: child.summary,
+                    treeNode: child,
+                };
+            }
+
+            return {
+                id: getTreeNodeGraphId(child),
+                type: 'file' as const,
+                label: child.label,
+                directory: child.file_path,
+                functionality: child.summary,
+                treeNode: child,
+            };
+        });
+
+        const visibleIds = new Set(nodes.map(node => node.id));
         const seen = new Set<string>();
         const links: GLink[] = [];
-        for (const f of sm.files) {
-            for (const c of f.connection) {
-                if (!names.has(c)) continue;
-                const key = [f.fileName, c].sort().join('|');
-                if (seen.has(key)) continue;
-                seen.add(key); links.push({ source: f.fileName, target: c });
-            }
-        }
-        applyGraph(nodes, links, false);
-    }, [submaps, updateActiveInternalIds, updateExpandedNodeId, updateInternalNodes, updateInternalParticle]);
 
-    useEffect(() => { if (graphData) loadDomain(); }, [graphData, loadDomain]);
+        for (const edge of cluster.edges ?? []) {
+            const source = resolveDirectChildId(cluster, edge.from);
+            const target = resolveDirectChildId(cluster, edge.to);
+            if (!source || !target || source === target) continue;
+            if (!visibleIds.has(source) || !visibleIds.has(target)) continue;
+            const key = [source, target].sort().join('|');
+            if (seen.has(key)) continue;
+            seen.add(key);
+            links.push({ source, target });
+        }
+
+        return { nodes, links };
+    }, []);
+
+    const loadClusterPath = useCallback((path: BackendCluster[], preservePlayback = false) => {
+        if (path.length === 0) return;
+        setClusterStack(path);
+        if (!preservePlayback) setIsPlaying(false);
+        setPopup(null);
+        updateExpandedNodeId(null);
+        updateInternalNodes({});
+        updateActiveInternalIds(new Set());
+        updateInternalParticle(null);
+        const target = path[path.length - 1];
+        const { nodes, links } = buildLayerGraph(target);
+        applyGraph(nodes, links, path.length === 1);
+    }, [buildLayerGraph, updateActiveInternalIds, updateExpandedNodeId, updateInternalNodes, updateInternalParticle]);
+
+    const loadDomain = useCallback((preservePlayback = false) => {
+        if (!rootCluster) return;
+        loadClusterPath([rootCluster], preservePlayback);
+    }, [loadClusterPath, rootCluster]);
+
+    const loadClusterByLabel = useCallback((label: string, preservePlayback = false) => {
+        const path = findClusterPathByLabel(rootCluster, label);
+        if (!path) return;
+        loadClusterPath(path, preservePlayback);
+    }, [loadClusterPath, rootCluster]);
+
+    const loadChildCluster = useCallback((cluster: BackendCluster, preservePlayback = false) => {
+        const path = findClusterPathById(rootCluster, cluster.id) ?? findClusterPathByLabel(rootCluster, cluster.label);
+        if (path) {
+            loadClusterPath(path, preservePlayback);
+        }
+    }, [loadClusterPath, rootCluster]);
+
+    const loadParentLayer = useCallback(() => {
+        if (isPlayingRef.current || clusterStack.length <= 1) return;
+        loadClusterPath(clusterStack.slice(0, -1));
+    }, [clusterStack, loadClusterPath]);
+
+    useEffect(() => {
+        if (!rootCluster) {
+            if (isLeaf(graphData)) {
+                const node: GNode = {
+                    id: getTreeNodeGraphId(graphData),
+                    type: 'file',
+                    label: graphData.label,
+                    directory: graphData.file_path,
+                    functionality: graphData.summary,
+                    treeNode: graphData,
+                };
+                nodesRef.current = [node];
+                linksRef.current = [];
+                setGraphState({ nodes: [node], links: [] });
+            }
+            return;
+        }
+        loadClusterPath([rootCluster]);
+    }, [graphData, loadClusterPath, rootCluster]);
 
     // TEAMMATE: Escape key exits submap view
     useEffect(() => {
         const onKeyDown = (e: KeyboardEvent) => {
             if (isPlayingRef.current) return;
-            if (e.key === 'Escape' && !isDomainView) { setPopup(null); loadDomain(); }
+            if (e.key === 'Escape' && canGoBack) { setPopup(null); loadParentLayer(); }
         };
         window.addEventListener('keydown', onKeyDown);
         return () => window.removeEventListener('keydown', onKeyDown);
-    }, [isDomainView, loadDomain]);
+    }, [canGoBack, loadParentLayer]);
 
     // ---------------------------------------------------------------------------
     // YOUR: Workflow animation — reads workflowData.flow.paths[0]
@@ -621,6 +930,25 @@ export function GraphViewerCanvas({ repoId }: { repoId: string }) {
         const fallbackWorkflow = workflowData as WorkflowAnimationPayload;
         const flow = (workflowOverride ?? fallbackWorkflow).flow;
         const animationId = Symbol('workflow-animation');
+
+        // Normalize to segments array. If backend sent segments[], use them.
+        // Otherwise wrap the single-segment legacy fields so the loop below
+        // handles both shapes identically.
+        const segments: WorkflowSegment[] = (flow.segments && flow.segments.length > 0)
+            ? flow.segments.map(seg => ({
+                ...seg,
+                // Each segment inherits top-level step_duration_ms if not set.
+                step_duration_ms: seg.step_duration_ms ?? flow.step_duration_ms ?? 1000,
+            }))
+            : [{
+                navigate_to_submap: flow.navigate_to_submap,
+                navigate_to_submap_id: flow.navigate_to_submap_id,
+                zoom_to_node: flow.zoom_to_node,
+                paths: flow.paths ?? [],
+                internal_flow: flow.internal_flow,
+                loop: flow.loop ?? false,
+                step_duration_ms: flow.step_duration_ms ?? 1000,
+            }];
         const dur = Math.max(typeof flow.step_duration_ms === 'number' ? flow.step_duration_ms : 1000, 400);
         const tempLinkKeys = new Set<string>();
 
@@ -629,7 +957,23 @@ export function GraphViewerCanvas({ repoId }: { repoId: string }) {
             if (currentAnimationRef.current === animationId) {
                 currentAnimationRef.current = null;
             }
+            clearFitTimeout();
             unpinCurrentNodes();
+            nodesRef.current.forEach(n => {
+                n.vx = 0;
+                n.vy = 0;
+            });
+            const isRoot = clusterStack.length <= 1;
+            if (graphRef.current) {
+                graphRef.current.d3Force('charge')?.strength(isRoot ? -2200 : -560);
+                graphRef.current.d3Force('link')?.distance(isRoot ? 165 : 108);
+                graphRef.current.d3Force('collision', forceCollide(isRoot ? 112 : 82));
+                graphRef.current.d3Force('x', forceX(0).strength(isRoot ? 0.04 : 0.11));
+                graphRef.current.d3Force('y', forceY(0).strength(isRoot ? 0.04 : 0.11));
+                window.setTimeout(() => {
+                    graphRef.current?.d3ReheatSimulation();
+                }, 150);
+            }
             nodesRef.current.forEach(n => {
                 n.isHighlighted = false;
                 n.isFaded = false;
@@ -649,80 +993,219 @@ export function GraphViewerCanvas({ repoId }: { repoId: string }) {
                 setGraphState({ nodes: [...nodesRef.current], links: [...linksRef.current] });
                 setIsPlaying(false);
             }
+            window.setTimeout(() => {
+                if (!graphRef.current || isPlayingRef.current) return;
+                graphRef.current.zoomToFit(650, 130);
+            }, 220);
         };
 
         isPlayingRef.current = true;
+        // Freeze physics without pausing canvas rendering; particles and glow
+        // still need the graph canvas to repaint every frame.
+        graphRef.current?.d3AlphaTarget?.(0);
+        graphRef.current?.d3Force?.('charge')?.strength?.(0);
+        graphRef.current?.d3Force?.('x')?.strength?.(0);
+        graphRef.current?.d3Force?.('y')?.strength?.(0);
+        graphRef.current?.d3Force?.('collision')?.radius?.(0);
         currentAnimationRef.current = animationId;
+        clearFitTimeout();
         setIsPlaying(true);
         setPopup(null);
 
         try {
             console.debug('[workflow] start', {
-                submapCount: submaps.length,
-                navigateToSubmap: flow.navigate_to_submap,
-                availableSubmaps: submaps.map(s => s.name),
+                segmentCount: segments.length,
+                clusterCount: clusters.length,
+                availableClusters: clusters.map(s => s.label),
             });
 
-            if (submaps.length === 0) {
-                console.warn('[workflow] skipped: graph submaps are not loaded');
+            if (!rootCluster || clusters.length === 0) {
+                console.warn('[workflow] skipped: graph clusters are not loaded');
                 return;
             }
 
-            if (flow.navigate_to_submap && view !== flow.navigate_to_submap) {
-                const targetSubmap = submaps.find(s => s.name === flow.navigate_to_submap);
-                if (!targetSubmap) {
-                    console.warn('[workflow] navigate_to_submap did not match any submap', {
-                        requested: flow.navigate_to_submap,
-                        available: submaps.map(s => s.name),
-                    });
-                } else {
-                    loadSubmap(targetSubmap.name, true);
-                    await waitForEngineStop(1800);
-                    await sleep(150);
+            let activeView = currentCluster?.label ?? rootCluster.label;
+            let activeClusterId = currentCluster?.id ?? rootCluster.id;
+            const ORPHAN_SENTINEL = '__orphan__';
+            const fileToSubmap = new Map<string, string>();
+            clusters.forEach(cluster => {
+                collectLeaves(cluster).forEach(leaf => {
+                    if (!fileToSubmap.has(leaf.label) || countLeaves(cluster) < countLeaves(clusters.find(c => c.label === fileToSubmap.get(leaf.label)) ?? rootCluster)) {
+                        fileToSubmap.set(leaf.label, cluster.label);
+                    }
+                });
+            });
+            rootCluster.children.forEach(child => {
+                if (child.type === 'leaf') {
+                    fileToSubmap.set(child.label, ORPHAN_SENTINEL);
                 }
-            }
-            if (!stillActive()) return;
+            });
 
-            pinCurrentNodes();
-            console.debug('[workflow] nodes after navigation', nodesRef.current.map(n => n.id));
-
-            const findLeafFile = (nodeId: string) => {
-                const preferredSubmap = submaps.find(s => s.name === flow.navigate_to_submap || s.name === view);
-                return preferredSubmap?.files.find(f => f.fileName === nodeId)
-                    ?? submaps.flatMap(s => s.files).find(f => f.fileName === nodeId);
+            const getLinkKey = (from: string, to: string) => [from, to].sort().join('|');
+            const getEndpointId = (endpoint: string | GNode) => typeof endpoint === 'string' ? endpoint : endpoint.id;
+            const findRenderedNode = (labelOrId: string | null | undefined) => {
+                if (!labelOrId) return undefined;
+                return nodesRef.current.find(n => n.id === labelOrId || n.label === labelOrId);
+            };
+            const renderedIdFor = (labelOrId: string | null | undefined) => findRenderedNode(labelOrId)?.id;
+            const topVisibleClusterLabel = (label: string | null) => {
+                if (!label) return null;
+                const path = findClusterPathByLabel(rootCluster, label);
+                if (!path) return label;
+                return path[1]?.label ?? path[0]?.label ?? label;
             };
 
-            const animateNodeInternals = async (nodeId: string, explicitSteps?: string[]) => {
-                const targetNode = nodesRef.current.find(n => n.id === nodeId);
-                if (!targetNode) return;
+            const animateDomainHop = async (_fromSubmap: string | null, toSubmap: string, toSubmapId?: string | null) => {
+                if (!stillActive()) return;
+                const targetPath = toSubmapId
+                    ? findClusterPathById(rootCluster, toSubmapId)
+                    : findClusterPathByLabel(rootCluster, toSubmap);
+                const targetCluster = targetPath?.[targetPath.length - 1];
+                if (!targetCluster) return;
 
-                const leafFile = findLeafFile(nodeId);
-                const fallbackSteps = (leafFile?.leafNodes ?? [])
+                if (activeView !== rootCluster.label) {
+                    if (graphRef.current) {
+                        graphRef.current.zoom(0.5, 500);
+                        await sleep(400);
+                    }
+                    if (!stillActive()) return;
+
+                    suppressNextInitialFitRef.current = true;
+                    loadDomain(true);
+                    activeView = rootCluster.label;
+                    activeClusterId = rootCluster.id;
+                    await sleep(600);
+                    if (!stillActive()) return;
+
+                    if (graphRef.current) {
+                        graphRef.current.zoomToFit(500, 80);
+                        await sleep(550);
+                    }
+                    if (!stillActive()) return;
+                }
+
+                pinCurrentNodes();
+                const visibleToLabel = topVisibleClusterLabel(targetCluster.label) ?? targetCluster.label;
+                const visibleTo = renderedIdFor(visibleToLabel) ?? visibleToLabel;
+                nodesRef.current.forEach(n => {
+                    n.isHighlighted = n.id === visibleTo;
+                    n.isFaded = n.id !== visibleTo;
+                });
+                linksRef.current.forEach(l => {
+                    l.isFaded = true;
+                    l.isAnimated = false;
+                    l.isActiveEdge = false;
+                });
+                forceCanvasRender();
+                await sleep(700);
+                if (!stillActive()) return;
+
+                const targetNode = nodesRef.current.find(n => n.id === visibleTo);
+                if (targetNode && graphRef.current) {
+                    graphRef.current.centerAt(targetNode.x ?? 0, targetNode.y ?? 0, 600);
+                    await sleep(400);
+                    if (!stillActive()) return;
+
+                    graphRef.current.zoom(1.8, 500);
+                    await sleep(400);
+                    if (!stillActive()) return;
+
+                    graphRef.current.zoom(3.5, 500);
+                    await sleep(400);
+                    if (!stillActive()) return;
+                }
+
+                if (graphRef.current) {
+                    graphRef.current.zoom(0.3, 0);
+                }
+
+                suppressNextInitialFitRef.current = true;
+                loadClusterPath(targetPath, true);
+                activeView = targetCluster.label;
+                activeClusterId = targetCluster.id;
+                await sleep(300);
+                if (!stillActive()) return;
+
+                if (graphRef.current) {
+                    graphRef.current.zoomToFit(700, 90);
+                    await sleep(750);
+                }
+                if (!stillActive()) return;
+
+                pinCurrentNodes();
+                await sleep(100);
+            };
+
+            const goToSubmap = async (targetSubmapName: string, targetSubmapId?: string | null) => {
+                if (!stillActive()) return;
+                const targetPath = targetSubmapId
+                    ? findClusterPathById(rootCluster, targetSubmapId)
+                    : findClusterPathByLabel(rootCluster, targetSubmapName);
+                if (!targetPath) {
+                    console.warn('[workflow] cluster did not match any available cluster', {
+                        requested: targetSubmapName,
+                        requestedId: targetSubmapId,
+                        available: clusters.map(s => s.label),
+                    });
+                    return;
+                }
+
+                const targetCluster = targetPath[targetPath.length - 1];
+                if (activeClusterId !== targetCluster.id) {
+                    await animateDomainHop(activeView === rootCluster.label ? null : activeView, targetCluster.label, targetCluster.id);
+                }
+                activeView = targetCluster.label;
+                activeClusterId = targetCluster.id;
+
+                pinCurrentNodes();
+                await sleep(100);
+            };
+
+            const findLeafFile = (nodeLabelOrId: string) => {
+                const rendered = findRenderedNode(nodeLabelOrId);
+                if (isLeaf(rendered?.treeNode)) return rendered.treeNode;
+                return findLeafByLabel(rootCluster, nodeLabelOrId);
+            };
+
+            const animateNodeInternals = async (nodeLabelOrId: string, explicitSteps?: string[], segDur?: number) => {
+                const targetNode = findRenderedNode(nodeLabelOrId);
+                if (!targetNode) return;
+                const nodeId = targetNode.id;
+
+                const leafFile = findLeafFile(nodeLabelOrId);
+                const fallbackSteps = (leafFile?.nodes ?? [])
                     .map(node => node.id)
                     .filter(Boolean)
                     .slice(0, 5);
                 const steps = (explicitSteps?.length ? explicitSteps : fallbackSteps).slice(0, 5);
+                const stepDur = segDur ?? dur;
 
                 nodesRef.current.forEach(n => {
                     n.isFaded = n.id !== nodeId;
                     n.isHighlighted = n.id === nodeId;
                 });
-                linksRef.current.forEach(l => { l.isFaded = true; l.isAnimated = false; l.isActiveEdge = false; });
-                focusNodes([nodeId], 1.22, Math.min(600, dur));
+                linksRef.current.forEach(l => {
+                    l.isFaded = true;
+                    l.isAnimated = false;
+                    l.isActiveEdge = false;
+                    l.animStart = undefined;
+                    l.animDur = undefined;
+                });
+                const cameraDur = focusNodes([nodeId], 1.08, Math.min(600, stepDur));
                 forceCanvasRender();
 
                 if (steps.length === 0) {
-                    await sleep(Math.min(500, dur));
+                    await sleep(Math.max(Math.min(500, stepDur), cameraDur + 50));
                     return;
                 }
 
-                const positions = computeInternalPositions(targetNode, steps, leafFile?.leafNodes ?? []);
+                const positions = computeInternalPositions(targetNode, steps, leafFile?.nodes ?? []);
                 updateInternalNodes(positions);
                 updateExpandedNodeId(nodeId);
                 forceCanvasRender();
-                await sleep(250);
+                await sleep(Math.max(250, cameraDur + 50));
 
-                const internalDur = Math.max(Math.min(Math.floor(dur * 0.55), 650), 300);
+                const internalDur = Math.max(Math.min(Math.floor(stepDur * 0.55), 650), 300);
                 if (steps.length === 1) {
                     updateActiveInternalIds(new Set([steps[0]]));
                     await sleep(internalDur);
@@ -741,114 +1224,225 @@ export function GraphViewerCanvas({ repoId }: { repoId: string }) {
                 updateInternalNodes({});
             };
 
-            const zoomTargetId = flow.zoom_to_node ?? flow.internal_flow?.node_label;
-            if (zoomTargetId && graphRef.current) {
-                const targetNode = nodesRef.current.find(n => n.id === zoomTargetId);
-                if (!targetNode) {
-                    console.warn('[workflow] zoom_to_node did not match a rendered node', {
-                        requested: zoomTargetId,
-                        available: nodesRef.current.map(n => n.id),
-                    });
-                } else {
-                    nodesRef.current.forEach(n => {
-                        n.isFaded = n.id !== zoomTargetId;
-                        n.isHighlighted = n.id === zoomTargetId;
-                    });
-                    linksRef.current.forEach(l => { l.isFaded = true; l.isAnimated = false; l.isActiveEdge = false; });
-                    forceCanvasRender();
+            // ── Iterate segments ──────────────────────────────────────────────────
+            // Each segment is an independent animation unit: navigate → zoom → internals → paths.
+            // Between segments we pause briefly so the user can register the transition.
+            const animatedInternalNodes = new Set<string>();
 
-                    focusNodes([targetNode.id], 1.35, 650);
-                    await sleep(750);
+            for (let segIdx = 0; segIdx < segments.length; segIdx++) {
+                if (!stillActive()) break;
+                const seg = segments[segIdx];
+                const segDur = Math.max(seg.step_duration_ms ?? dur, 400);
+
+                console.debug(`[workflow] segment ${segIdx + 1}/${segments.length}`, {
+                    navigate_to_submap: seg.navigate_to_submap,
+                    zoom_to_node: seg.zoom_to_node,
+                });
+
+                // Phase 1: Navigate to the segment's submap.
+                // null means a root-level orphan leaf that is already visible
+                // in domain view; undefined falls back to file-to-cluster lookup.
+                const zoomTargetId = seg.zoom_to_node ?? seg.internal_flow?.node_label;
+                const explicitSubmap = Object.prototype.hasOwnProperty.call(seg, 'navigate_to_submap')
+                    ? seg.navigate_to_submap
+                    : undefined;
+                const explicitSubmapId = Object.prototype.hasOwnProperty.call(seg, 'navigate_to_submap_id')
+                    ? seg.navigate_to_submap_id
+                    : undefined;
+                const inferredSubmap = zoomTargetId ? fileToSubmap.get(zoomTargetId) : undefined;
+                const targetSubmapName = explicitSubmap === null
+                    ? null
+                    : (explicitSubmap ?? inferredSubmap ?? undefined);
+
+                if (targetSubmapName === null || targetSubmapName === ORPHAN_SENTINEL) {
+                    if (activeView !== rootCluster.label) {
+                        suppressNextInitialFitRef.current = true;
+                        loadDomain(true);
+                        activeView = rootCluster.label;
+                        activeClusterId = rootCluster.id;
+                        await waitForEngineStop(1800);
+                        if (!stillActive()) break;
+                    }
+                    pinCurrentNodes();
+                } else if (targetSubmapName) {
+                    const targetPath = explicitSubmapId
+                        ? findClusterPathById(rootCluster, explicitSubmapId)
+                        : findClusterPathByLabel(rootCluster, targetSubmapName);
+                    const targetCluster = targetPath?.[targetPath.length - 1];
+                    if (targetPath && activeClusterId !== targetCluster?.id) {
+                        await goToSubmap(targetSubmapName, explicitSubmapId);
+                    } else if (!targetPath) {
+                        console.warn('[workflow] navigate_to_submap did not match any cluster - staying at current view', {
+                            requested: targetSubmapName,
+                            requestedId: explicitSubmapId,
+                        });
+                    }
                 }
-            }
-            if (!stillActive()) return;
+                if (!stillActive()) break;
 
-            const internalFlow = flow.internal_flow;
-            if (internalFlow) {
-                const targetId = internalFlow.node_label || zoomTargetId;
-                const targetNode = targetId ? nodesRef.current.find(n => n.id === targetId) : undefined;
-                if (!targetId || !targetNode) {
-                    console.warn('[workflow] internal_flow target did not match a rendered node', {
-                        requested: targetId,
-                        available: nodesRef.current.map(n => n.id),
-                    });
-                } else {
-                    const leafFile = findLeafFile(targetId);
-                    console.debug('[workflow] target leaf nodes', {
-                        file: targetId,
-                        leafNodes: leafFile?.leafNodes ?? [],
-                    });
-                    await animateNodeInternals(targetId, internalFlow.steps);
+                // Phase 2: Zoom to the target node.
+                if (zoomTargetId && graphRef.current) {
+                    const targetNode = findRenderedNode(zoomTargetId);
+                    if (!targetNode) {
+                        console.warn('[workflow] zoom_to_node did not match a rendered node', {
+                            requested: zoomTargetId,
+                            available: nodesRef.current.map(n => ({ id: n.id, label: n.label })),
+                        });
+                    } else {
+                        nodesRef.current.forEach(n => {
+                            n.isFaded = n.id !== targetNode.id;
+                            n.isHighlighted = n.id === targetNode.id;
+                        });
+                        linksRef.current.forEach(l => { l.isFaded = true; l.isAnimated = false; l.isActiveEdge = false; });
+                        forceCanvasRender();
+                        const cameraDur = focusNodes([targetNode.id], 1.12, 650);
+                        await sleep(Math.max(750, cameraDur + 50));
+                    }
                 }
-            }
-            if (!stillActive()) return;
+                if (!stillActive()) break;
 
-            const path = flow.paths?.[0];
-            if (Array.isArray(path) && path.length > 1) {
-                updateExpandedNodeId(null);
-                updateInternalNodes({});
-                updateInternalParticle(null);
-
-                if (graphRef.current) {
-                    graphRef.current.zoomToFit(600, 150);
-                    await sleep(700);
+                // Phase 3: Animate internals for the target node.
+                const internalFlow = seg.internal_flow;
+                if (internalFlow) {
+                    const targetId = internalFlow.node_label || zoomTargetId;
+                    const targetNode = findRenderedNode(targetId);
+                    if (!targetId || !targetNode) {
+                        console.warn('[workflow] internal_flow target did not match a rendered node', {
+                            requested: targetId,
+                            available: nodesRef.current.map(n => ({ id: n.id, label: n.label })),
+                        });
+                    } else {
+                        await animateNodeInternals(targetId, internalFlow.steps, segDur);
+                        animatedInternalNodes.add(targetId);
+                    }
                 }
+                if (!stillActive()) break;
 
-                for (let i = 0; i < path.length - 1; i++) {
-                    const key = [path[i], path[i + 1]].sort().join('|');
-                    const exists = linksRef.current.some(l => {
-                        const src = typeof l.source === 'string' ? l.source : (l.source as GNode).id;
-                        const tgt = typeof l.target === 'string' ? l.target : (l.target as GNode).id;
-                        return [src, tgt].sort().join('|') === key;
-                    });
-                    if (!exists) {
-                        linksRef.current.push({ source: path[i], target: path[i + 1] });
-                        tempLinkKeys.add(key);
+                // Phase 4: Animate cross-node paths within this segment.
+                const path = seg.paths?.[0];
+                if (Array.isArray(path) && path.length > 1) {
+                    updateExpandedNodeId(null);
+                    updateInternalNodes({});
+                    updateInternalParticle(null);
+
+                    if (graphRef.current) {
+                        // First center on all visible nodes, then fit with enough padding
+                        // to make the zoom-out feel like pulling back rather than jumping.
+                        const allIds = nodesRef.current.map(n => n.id);
+                        focusNodes(allIds, 0.85, 500);
+                        await sleep(600);
+                    }
+
+                    for (let step = 0; step < path.length - 1; step++) {
+                        if (!stillActive()) break;
+                        const srcNode = path[step];
+                        const tgtNode = path[step + 1];
+                        const srcRenderId = renderedIdFor(srcNode);
+                        const tgtRenderId = renderedIdFor(tgtNode);
+                        const activeKey = srcRenderId && tgtRenderId ? getLinkKey(srcRenderId, tgtRenderId) : '';
+                        const srcSubmap = fileToSubmap.get(srcNode);
+                        const tgtSubmap = fileToSubmap.get(tgtNode);
+
+                        if (srcSubmap === ORPHAN_SENTINEL && activeView !== rootCluster.label) {
+                            suppressNextInitialFitRef.current = true;
+                            loadDomain(true);
+                            activeView = rootCluster.label;
+                            activeClusterId = rootCluster.id;
+                            await waitForEngineStop(1800);
+                            if (!stillActive()) break;
+                            pinCurrentNodes();
+                        } else if (srcSubmap && srcSubmap !== ORPHAN_SENTINEL && activeView !== srcSubmap) {
+                            await goToSubmap(srcSubmap);
+                            if (!stillActive()) break;
+                        }
+
+                        if (!animatedInternalNodes.has(srcNode)) {
+                            await animateNodeInternals(srcNode, undefined, segDur);
+                            animatedInternalNodes.add(srcNode);
+                            if (!stillActive()) break;
+                        }
+
+                        if (
+                            srcSubmap &&
+                            tgtSubmap &&
+                            srcSubmap !== ORPHAN_SENTINEL &&
+                            tgtSubmap !== ORPHAN_SENTINEL &&
+                            srcSubmap !== tgtSubmap
+                        ) {
+                            await animateDomainHop(srcSubmap, tgtSubmap);
+                            if (!stillActive()) break;
+                            await goToSubmap(tgtSubmap);
+                            if (!stillActive()) break;
+                            continue;
+                        }
+
+                        if (!srcRenderId || !tgtRenderId) continue;
+
+                        const fileEdgeExists = linksRef.current.some(l => {
+                            const src = getEndpointId(l.source);
+                            const tgt = getEndpointId(l.target);
+                            return getLinkKey(src, tgt) === activeKey;
+                        });
+                        if (!fileEdgeExists) {
+                            linksRef.current.push({ source: srcRenderId, target: tgtRenderId });
+                            tempLinkKeys.add(activeKey);
+                        }
+
+                        nodesRef.current.forEach(n => {
+                            n.isHighlighted = n.id === srcRenderId || n.id === tgtRenderId;
+                            n.isFaded = n.id !== srcRenderId && n.id !== tgtRenderId;
+                        });
+                        linksRef.current.forEach(l => {
+                            const src = typeof l.source === 'string' ? l.source : (l.source as GNode).id;
+                            const tgt = typeof l.target === 'string' ? l.target : (l.target as GNode).id;
+                            const key = [src, tgt].sort().join('|');
+                            l.isAnimated = key === activeKey;
+                            l.isActiveEdge = key === activeKey;
+                            l.isFaded = key !== activeKey;
+                            if (key === activeKey) {
+                                l.animStart = performance.now();
+                                l.animDur = segDur;
+                                l.animForward = src === srcRenderId;
+                            }
+                        });
+                        const cameraDur = focusNodes([srcRenderId, tgtRenderId], 1.02, Math.min(650, segDur));
+                        forceCanvasRender();
+                        await sleep(Math.max(segDur, cameraDur + 50));
+                    }
+
+                    const finalNode = path[path.length - 1];
+                    if (finalNode && !animatedInternalNodes.has(finalNode)) {
+                        const finalSubmap = fileToSubmap.get(finalNode);
+                        if (finalSubmap === ORPHAN_SENTINEL && activeView !== rootCluster.label) {
+                            suppressNextInitialFitRef.current = true;
+                            loadDomain(true);
+                            activeView = rootCluster.label;
+                            activeClusterId = rootCluster.id;
+                            await waitForEngineStop(1800);
+                        } else if (finalSubmap && finalSubmap !== ORPHAN_SENTINEL && activeView !== finalSubmap) {
+                            await goToSubmap(finalSubmap);
+                        }
+                        if (stillActive()) await animateNodeInternals(finalNode, undefined, segDur);
+                        animatedInternalNodes.add(finalNode);
                     }
                 }
 
-                const animatedInternalNodes = new Set<string>();
-                if (flow.internal_flow?.node_label) {
-                    animatedInternalNodes.add(flow.internal_flow.node_label);
-                }
-
-                for (let step = 0; step < path.length - 1; step++) {
-                    if (!stillActive()) return;
-                    const srcNode = path[step];
-                    const tgtNode = path[step + 1];
-                    const activeKey = [srcNode, tgtNode].sort().join('|');
-
-                    if (!animatedInternalNodes.has(srcNode)) {
-                        await animateNodeInternals(srcNode);
-                        animatedInternalNodes.add(srcNode);
-                        if (!stillActive()) return;
-                    }
-
+                // Brief pause between segments so transitions are readable.
+                if (segIdx < segments.length - 1 && stillActive()) {
                     nodesRef.current.forEach(n => {
-                        n.isHighlighted = n.id === srcNode || n.id === tgtNode;
-                        n.isFaded = n.id !== srcNode && n.id !== tgtNode;
+                        n.isHighlighted = false;
+                        n.isFaded = false;
                     });
                     linksRef.current.forEach(l => {
-                        const src = typeof l.source === 'string' ? l.source : (l.source as GNode).id;
-                        const tgt = typeof l.target === 'string' ? l.target : (l.target as GNode).id;
-                        const key = [src, tgt].sort().join('|');
-                        l.isAnimated = key === activeKey;
-                        l.isActiveEdge = key === activeKey;
-                        l.isFaded = key !== activeKey;
-                        if (key === activeKey) {
-                            l.animStart = performance.now();
-                            l.animDur = dur;
-                            l.animForward = src === srcNode;
-                        }
+                        l.isAnimated = false;
+                        l.isActiveEdge = false;
+                        l.isFaded = false;
+                        l.animStart = undefined;
+                        l.animForward = undefined;
+                        l.animDur = undefined;
                     });
-                    focusNodes([srcNode, tgtNode], 1.05, Math.min(650, dur));
                     forceCanvasRender();
-                    await sleep(dur);
-                }
-
-                const finalNode = path[path.length - 1];
-                if (finalNode && !animatedInternalNodes.has(finalNode)) {
-                    await animateNodeInternals(finalNode);
+                    await sleep(600); // slightly longer — give canvas one full render cycle to clear
                 }
             }
 
@@ -858,16 +1452,20 @@ export function GraphViewerCanvas({ repoId }: { repoId: string }) {
         }
     }, [
         forceCanvasRender,
+        clearFitTimeout,
         focusNodes,
-        loadSubmap,
+        clusters,
+        clusterStack,
+        currentCluster,
+        loadDomain,
+        loadClusterByLabel,
         pinCurrentNodes,
-        submaps,
+        rootCluster,
         updateActiveInternalIds,
         updateExpandedNodeId,
         updateInternalNodes,
         updateInternalParticle,
         unpinCurrentNodes,
-        view,
         waitForEngineStop,
     ]);
 
@@ -882,12 +1480,12 @@ export function GraphViewerCanvas({ repoId }: { repoId: string }) {
     const handleNodeClick = useCallback((node: any) => {
         if (isPlayingRef.current) return;
         const n = node as GNode;
-        if (n.type === 'submap') loadSubmap(n.label);
+        if (n.type === 'cluster' && isCluster(n.treeNode)) loadChildCluster(n.treeNode);
         else if (graphRef.current) {
             const { x, y } = graphRef.current.graph2ScreenCoords(n.x ?? 0, n.y ?? 0);
             setPopup(prev => prev?.node.id === n.id ? null : { node: n, sx: x, sy: y });
         }
-    }, [loadSubmap]);
+    }, [loadChildCluster]);
 
     // TEAMMATE: pin node after drag
     const handleNodeDragEnd = useCallback((node: any) => {
@@ -900,20 +1498,7 @@ export function GraphViewerCanvas({ repoId }: { repoId: string }) {
     const handleEngineStop = useCallback(() => {
         engineStopResolverRef.current?.();
         engineStopResolverRef.current = null;
-        if (isPlayingRef.current) return;
-
-        if (!graphRef.current) return;
-        graphRef.current.centerAt(0, 0, 250);
-        graphRef.current.zoomToFit(400, isDomainView ? 72 : 78);
-        setTimeout(() => {
-            if (!graphRef.current) return;
-            const current = graphRef.current.zoom();
-            const maxZoom = isDomainView ? 1.02 : 1.08;
-            const minZoom = isDomainView ? 0.74 : 0.88;
-            if (current > maxZoom) graphRef.current.zoom(maxZoom, 300);
-            else if (current < minZoom) graphRef.current.zoom(minZoom, 300);
-        }, 450);
-    }, [isDomainView]);
+    }, []);
 
     // ---------------------------------------------------------------------------
     // Loading / error states
@@ -945,42 +1530,95 @@ export function GraphViewerCanvas({ repoId }: { repoId: string }) {
             {/* Top bar */}
             <div className="absolute top-0 left-0 right-0 z-20 flex items-center gap-3 px-5 py-4 bg-[#EBE3D5] border-b border-[#B0A695]">
                 <AnimatePresence>
-                    {!isDomainView && (
+                    {canGoBack && (
                         <motion.button key="back"
                                        initial={{ opacity: 0, x: -12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }}
-                                       onClick={() => { if (!isPlayingRef.current) loadDomain(); }}
+                                       onClick={loadParentLayer}
                                        className="flex items-center gap-1.5 text-[#433b33] hover:text-[#221d18] text-sm font-medium"
                         >
-                            <ArrowLeft className="h-4 w-4" /> All domains
+                            <ArrowLeft className="h-4 w-4" /> Up one layer
                         </motion.button>
                     )}
                 </AnimatePresence>
-                <span className="text-[#433b33] font-bold text-lg">Codebase Map</span>
-                {!isDomainView && (
+                <div className="min-w-0">
+                    <div className="flex min-w-0 items-center gap-2">
+                        <span className="truncate text-[#433b33] font-bold text-lg">
+                            {repoName ?? rootCluster?.label ?? 'Codebase Map'}
+                        </span>
+                        <span className="shrink-0 rounded-full border border-[#B0A695] bg-[#DDD4C7] px-2 py-0.5 text-[11px] font-semibold text-[#433b33]">
+                            {totalFileCount} files
+                        </span>
+                    </div>
+                </div>
+                {breadcrumb.length > 1 && (
                     <><span className="text-[#776B5D]">/</span>
-                        <span className="text-[#433b33] font-semibold capitalize">{view}</span></>
+                        <span className="text-[#433b33] font-semibold capitalize">{breadcrumb.slice(1).join(' / ')}</span></>
                 )}
-                {isPlaying && (
-                    <span className="ml-auto text-xs text-[#2F5D8C] animate-pulse font-semibold">
-            Simulating workflow…
-          </span>
-                )}
+                <span className="text-xs text-[#776B5D]">{currentLayerCount} visible / {currentLeafCount} files</span>
+                <div className="ml-auto flex items-center gap-3">
+                    {isPlaying && (
+                        <span className="text-xs text-[#2F5D8C] animate-pulse font-semibold">
+                            Simulating workflow...
+                        </span>
+                    )}
+                    <button
+                        type="button"
+                        onClick={() => setShowHelp((value) => !value)}
+                        className="flex items-center gap-1.5 rounded-full border border-[#B0A695] bg-[#F3EEEA] px-3 py-1.5 text-xs font-semibold text-[#433b33] shadow-[2px_2px_0_#000] transition hover:-translate-y-0.5"
+                    >
+                        <HelpCircle className="h-4 w-4" />
+                        Help
+                    </button>
+                </div>
             </div>
+
+            <AnimatePresence>
+                {showHelp && (
+                    <motion.div
+                        initial={{ opacity: 0, y: -8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -8 }}
+                        className="absolute right-5 top-[4.6rem] z-30 w-[22rem] rounded-lg border-[2px] border-[#B0A695] bg-[#F8F3EC] p-4 text-[#433b33] shadow-[6px_6px_0_#000]"
+                        onMouseDown={(event) => event.stopPropagation()}
+                    >
+                        <button
+                            type="button"
+                            className="absolute right-3 top-3 text-[#776B5D] hover:text-[#433b33]"
+                            onClick={() => setShowHelp(false)}
+                            aria-label="Close help"
+                        >
+                            <X className="h-4 w-4" />
+                        </button>
+                        <p className="pr-6 text-sm font-bold">How to use this map</p>
+                        <div className="mt-3 space-y-3 text-sm leading-6 text-[#776B5D]">
+                            <p>
+                                <span className="font-semibold text-[#433b33]">RAG question:</span> searches indexed repo chunks and answers with cited source files.
+                            </p>
+                            <p>
+                                <span className="font-semibold text-[#433b33]">Workflow showcase:</span> turns process questions into graph animation across clusters, files, and internal components.
+                            </p>
+                            <p>
+                                Click folders to go deeper. Use <span className="font-semibold text-[#433b33]">Up one layer</span> or Escape to return.
+                            </p>
+                        </div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
 
             {/* Canvas area */}
             <div className="absolute inset-0 pt-16">
 
                 {/* TEAMMATE: floating back pill with file count */}
                 <AnimatePresence>
-                    {!isDomainView && (
+                    {canGoBack && (
                         <motion.button
                             initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 12 }}
-                            onClick={() => { if (!isPlayingRef.current) loadDomain(); }}
+                            onClick={loadParentLayer}
                             className="absolute left-5 top-20 z-20 flex items-center gap-2 rounded-full border border-[#B0A695] bg-[#DDD4C7] px-4 py-2 text-sm font-medium text-[#433b33] shadow-[3px_3px_0px_0px_rgba(0,0,0,0.8)] transition hover:-translate-y-0.5 hover:text-[#221d18]"
                         >
                             <ArrowLeft className="h-4 w-4" />
-                            Back to domains
-                            <span className="text-xs text-[#776B5D]">{currentSubmapFileCount} files</span>
+                            Parent layer
+                            <span className="text-xs text-[#776B5D]">{currentLayerCount} visible</span>
                         </motion.button>
                     )}
                 </AnimatePresence>
@@ -990,6 +1628,7 @@ export function GraphViewerCanvas({ repoId }: { repoId: string }) {
                     graphData={graphState}
                     width={dims.w} height={dims.h}
                     backgroundColor={C.bg}
+                    autoPauseRedraw={false}
                     nodeCanvasObject={(node, ctx, scale) => drawNode(
                         node as GNode,
                         ctx,
@@ -1001,14 +1640,15 @@ export function GraphViewerCanvas({ repoId }: { repoId: string }) {
                         internalParticleRef.current
                     )}
                     nodeCanvasObjectMode={() => 'replace'}
-                    nodeVal={(n: any) => n.id === expandedNodeId ? 120 : (n.type === 'submap' ? 70 : 35)}
+                    nodeVal={(n: any) => n.id === expandedNodeId ? 120 : (n.type === 'cluster' ? 70 : 35)}
                     nodePointerAreaPaint={(n: any, color, ctx) => {
                         const isExpanded = n.id === expandedNodeId && n.type === 'file';
-                        const w = isExpanded ? 280 : (n.type === 'submap' ? 220 : 160);
-                        const h = isExpanded ? 300 : (n.type === 'submap' ? 120 : 48);
+                        const w = isExpanded ? 280 : (n.type === 'cluster' ? 220 : 160);
+                        const h = isExpanded ? 300 : (n.type === 'cluster' ? 120 : 48);
                         ctx.fillStyle = color;
                         ctx.fillRect((n.x ?? 0) - w / 2, (n.y ?? 0) - h / 2, w, h);
                     }}
+                    enableNodeDrag={!isPlaying}
                     onNodeClick={handleNodeClick}
                     onNodeDragEnd={handleNodeDragEnd}
                     linkColor={(l: any) =>
@@ -1048,7 +1688,8 @@ export function GraphViewerCanvas({ repoId }: { repoId: string }) {
                         drawDot(p2, 3, '#6D8EAA', false);
                         ctx.restore();
                     }}
-                    warmupTicks={100}
+                    warmupTicks={150}
+                    cooldownTicks={50}
                     onEngineStop={handleEngineStop}
                 />
             </div>
@@ -1073,7 +1714,7 @@ export function GraphViewerCanvas({ repoId }: { repoId: string }) {
                 )}
             </AnimatePresence>
 
-            {/* TEAMMATE: ChatPanel with RAG scope + YOUR: workflow trigger on query */}
+            {/* ChatPanel uses global RAG and cross-map workflow by default. */}
             <ChatPanel
                 repoId={repoId}
                 scope={currentScope}

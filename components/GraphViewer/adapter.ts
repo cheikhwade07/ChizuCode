@@ -1,40 +1,9 @@
 /**
- * adapter.ts
+ * API helpers and shared graph types.
  *
- * Converts the backend cluster tree (recursive Quanta structure)
- * into the flat submap schema the GraphViewer frontend expects.
- *
- * Backend schema (recursive):
- * {
- *   type: "cluster" | "leaf",
- *   label: string,
- *   summary: string,
- *   children: [...],
- *   edges: [{ from, to, label }],
- *   // leaf only:
- *   file_path: string,
- *   nodes: [{ id, label, responsibility }],
- * }
- *
- * Frontend schema (flat):
- * {
- *   submaps: [
- *     {
- *       name: string,
- *       files: [
- *         {
- *           fileName: string,
- *           directory: string,
- *           functionality: string,
- *           connection: string[],
- *         }
- *       ]
- *     }
- *   ]
- * }
+ * The backend graph endpoint returns a recursive composite tree. The frontend
+ * preserves that tree and renders one cluster layer at a time.
  */
-
-// ── Backend types ────────────────────────────────────────────────────────────
 
 export interface BackendEdge {
     from: string;
@@ -67,33 +36,11 @@ export interface BackendCluster {
     label: string;
     summary: string;
     edges: BackendEdge[];
-    children: (BackendCluster | BackendLeaf)[];
+    children: BackendTree[];
 }
 
 export type BackendTree = BackendCluster | BackendLeaf;
-
-// ── Frontend types ───────────────────────────────────────────────────────────
-
-export interface FileEntry {
-    fileName: string;
-    directory: string;
-    functionality: string;
-    connection: string[];
-    leafNodes?: BackendNode[];
-}
-
-export interface Submap {
-    id?: string;
-    name: string;
-    files: FileEntry[];
-    dependsOn: string[];
-}
-
-export interface GraphData {
-    rootId?: string;
-    rootLabel: string;
-    submaps: Submap[];
-}
+export type GraphData = BackendTree;
 
 export interface QuerySource {
     chunk_id: string;
@@ -103,8 +50,25 @@ export interface QuerySource {
     summary: string;
 }
 
+export interface WorkflowSegment {
+    navigate_to_submap?: string | null;
+    navigate_to_submap_id?: string | null;
+    zoom_to_node?: string;
+    paths: string[][];
+    internal_flow?: {
+        node_label: string;
+        steps: string[];
+    };
+    loop: boolean;
+    step_duration_ms: number;
+}
+
 export interface WorkflowFlow {
-    navigate_to_submap?: string;
+    // Multi-segment field — present when backend returns multiple animation targets.
+    segments?: WorkflowSegment[];
+    // Legacy single-segment fields — still populated for backward compatibility.
+    navigate_to_submap?: string | null;
+    navigate_to_submap_id?: string | null;
     zoom_to_node?: string;
     paths: string[][];
     internal_flow?: {
@@ -131,191 +95,67 @@ export interface QueryResult {
     flow?: WorkflowFlow;
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * Collect all leaf nodes from a subtree.
- */
-function collectLeaves(node: BackendTree): BackendLeaf[] {
-    if (node.type === "leaf") return [node];
-    return node.children.flatMap(collectLeaves);
+export interface IngestResponse {
+    repo_id: string;
+    status: string;
 }
 
-function collectClusterEdges(node: BackendTree): BackendEdge[] {
-    if (node.type === "leaf") {
-        return [];
-    }
-
-    return [
-        ...node.edges,
-        ...node.children.flatMap(collectClusterEdges),
-    ];
+export interface RepoStatus {
+    id: string;
+    name?: string;
+    github_url?: string;
+    status: "pending" | "ingesting" | "ready" | "failed";
+    phase?: string;
+    chunk_count: number;
+    error: string | null;
 }
 
-/**
- * Convert a cluster node into a Submap.
- * Uses the cluster's direct leaf children as files.
- * If cluster has sub-clusters, recursively flattens them.
- */
-function clusterToSubmap(cluster: BackendCluster): Submap {
-    const leaves = collectLeaves(cluster);
-    const leafLabelSet = new Set(leaves.map((leaf) => leaf.label));
-    const connectionMap = new Map<string, Set<string>>();
-
-    for (const leaf of leaves) {
-        connectionMap.set(leaf.label, new Set());
-    }
-
-    for (const edge of collectClusterEdges(cluster)) {
-        if (leafLabelSet.has(edge.from) && leafLabelSet.has(edge.to) && edge.from !== edge.to) {
-            connectionMap.get(edge.from)?.add(edge.to);
-        }
-    }
-
-    const files: FileEntry[] = leaves.map((leaf) => ({
-        fileName: leaf.label,
-        directory: leaf.file_path,
-        functionality: leaf.summary,
-        connection: [...(connectionMap.get(leaf.label) ?? [])],
-        leafNodes: leaf.nodes,
-    }));
-
-    return {
-        id: cluster.id,
-        name: cluster.label,
-        files,
-        dependsOn: [],
-    };
+export interface RepoQuota {
+    limit: number;
+    used: number;
+    remaining: number;
+    resets_in_hours: number;
 }
 
-// ── Public API ───────────────────────────────────────────────────────────────
+export class ApiError extends Error {
+    status: number;
+    detail: unknown;
 
-/**
- * Convert the full backend cluster tree to the frontend GraphData schema.
- *
- * Strategy:
- * - If root is a cluster with cluster children → each child cluster = one submap
- * - If root is a cluster with only leaf children → root itself = one submap
- * - If root is a leaf → wrap in a single submap
- */
-export function adaptBackendTree(tree: BackendTree): GraphData {
-    if (tree.type === "leaf") {
-        // Edge case: entire repo is one file
-        return {
-            rootId: tree.id,
-            rootLabel: tree.label,
-            submaps: [
-                {
-                    id: tree.id,
-                    name: tree.label,
-                    files: [
-                        {
-                            fileName: tree.label,
-                            directory: tree.file_path,
-                            functionality: tree.summary,
-                            connection: [],
-                            leafNodes: tree.nodes,
-                        },
-                    ],
-                    dependsOn: [],
-                },
-            ],
-        };
+    constructor(message: string, status: number, detail?: unknown) {
+        super(message);
+        this.name = "ApiError";
+        this.status = status;
+        this.detail = detail;
     }
-
-    const clusterChildren = tree.children.filter((child): child is BackendCluster => child.type === "cluster");
-    const leafChildren = tree.children.filter((child): child is BackendLeaf => child.type === "leaf");
-
-    if (clusterChildren.length === 0) {
-        return {
-            rootId: tree.id,
-            rootLabel: tree.label,
-            submaps: [clusterToSubmap(tree)],
-        };
-    }
-
-    const submaps: Submap[] = clusterChildren.map(clusterToSubmap);
-
-    if (leafChildren.length > 0) {
-        submaps.push({
-            name: "Project Root",
-            files: leafChildren.map((leaf) => ({
-                fileName: leaf.label,
-                directory: leaf.file_path,
-                functionality: leaf.summary,
-                connection: [],
-                leafNodes: leaf.nodes,
-            })),
-            dependsOn: [],
-        });
-    }
-
-    // submapIndex: submap name → submap object (direct cluster children)
-    // leafToSubmap: leaf label → containing submap name
-    //
-    // Root-level edges use individual leaf labels as endpoints. When orphan
-    // leaves are collapsed into "Project Root", those labels no longer match
-    // any submap name, so we resolve them via leafToSubmap.
-    const submapIndex = new Map(submaps.map((submap) => [submap.name, submap]));
-
-    const leafToSubmap = new Map<string, string>();
-    for (const submap of submaps) {
-        for (const file of submap.files) {
-            leafToSubmap.set(file.fileName, submap.name);
-        }
-    }
-
-    function resolveSubmapName(label: string): string | undefined {
-        if (submapIndex.has(label)) return label;          // cluster submap
-        return leafToSubmap.get(label);                    // orphan leaf → its container
-    }
-
-    for (const edge of tree.edges) {
-        const srcName = resolveSubmapName(edge.from);
-        const tgtName = resolveSubmapName(edge.to);
-        if (!srcName || !tgtName || srcName === tgtName) continue;
-        const source = submapIndex.get(srcName)!;
-        if (!source.dependsOn.includes(tgtName)) {
-            source.dependsOn.push(tgtName);
-        }
-    }
-
-    // Populate internal connections within "Project Root" using root-level
-    // edges whose both endpoints are orphan leaves.
-    if (leafChildren.length > 0) {
-        const rootLeafLabels = new Set(leafChildren.map((l) => l.label));
-        const rootConnectionMap = new Map<string, Set<string>>();
-        for (const leaf of leafChildren) rootConnectionMap.set(leaf.label, new Set());
-
-        for (const edge of tree.edges) {
-            if (rootLeafLabels.has(edge.from) && rootLeafLabels.has(edge.to) && edge.from !== edge.to) {
-                rootConnectionMap.get(edge.from)?.add(edge.to);
-            }
-        }
-
-        const projectRootSubmap = submapIndex.get("Project Root")!;
-        projectRootSubmap.files = leafChildren.map((leaf) => ({
-            fileName: leaf.label,
-            directory: leaf.file_path,
-            functionality: leaf.summary,
-            connection: [...(rootConnectionMap.get(leaf.label) ?? [])],
-            leafNodes: leaf.nodes,
-        }));
-    }
-
-    return {
-        rootId: tree.id,
-        rootLabel: tree.label,
-        submaps,
-    };
 }
-
-
-// ── API helpers ──────────────────────────────────────────────────────────────
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
-const START_REQUEST_TIMEOUT_MS = 10_000;
+const START_REQUEST_TIMEOUT_MS = 45_000;
 const STATUS_REQUEST_TIMEOUT_MS = 8_000;
+
+function isBackendTree(value: unknown): value is BackendTree {
+    if (!value || typeof value !== "object") return false;
+    const node = value as Partial<BackendTree>;
+    if (node.type === "leaf") {
+        return (
+            typeof node.label === "string" &&
+            typeof node.summary === "string" &&
+            typeof node.file_path === "string" &&
+            Array.isArray(node.nodes) &&
+            Array.isArray(node.edges)
+        );
+    }
+    if (node.type === "cluster") {
+        return (
+            typeof node.label === "string" &&
+            typeof node.summary === "string" &&
+            Array.isArray(node.edges) &&
+            Array.isArray(node.children) &&
+            node.children.every(isBackendTree)
+        );
+    }
+    return false;
+}
 
 async function fetchWithTimeout(
     url: string,
@@ -341,25 +181,28 @@ async function fetchWithTimeout(
     }
 }
 
-async function readErrorDetail(res: Response, fallback: string): Promise<string> {
-    const payload = await res.json().catch(() => null);
-    if (typeof payload?.detail === "string") return payload.detail;
-    if (typeof payload?.error === "string") return payload.error;
+async function readErrorPayload(res: Response): Promise<unknown> {
+    return res.json().catch(() => null);
+}
+
+function getErrorMessage(payload: unknown, fallback: string): string {
+    if (!payload || typeof payload !== "object") return fallback;
+    const data = payload as { detail?: unknown; error?: unknown; message?: unknown };
+    if (typeof data.detail === "string") return data.detail;
+    if (data.detail && typeof data.detail === "object") {
+        const detail = data.detail as { message?: unknown; error?: unknown };
+        if (typeof detail.message === "string") return detail.message;
+        if (typeof detail.error === "string") return detail.error;
+    }
+    if (typeof data.message === "string") return data.message;
+    if (typeof data.error === "string") return data.error;
     return fallback;
 }
 
-export interface IngestResponse {
-    repo_id: string;
-    status: string;
+async function readErrorDetail(res: Response, fallback: string): Promise<string> {
+    return getErrorMessage(await readErrorPayload(res), fallback);
 }
 
-export interface RepoStatus {
-    id: string;
-    status: "pending" | "ingesting" | "ready" | "failed";
-    phase?: string;
-    chunk_count: number;
-    error: string | null;
-}
 export async function getLatestRepoId(): Promise<string> {
     const res = await fetchWithTimeout(`${API_BASE}/repo/latest`, {}, STATUS_REQUEST_TIMEOUT_MS, "Latest repo check");
     if (!res.ok) throw new Error(await readErrorDetail(res, `Could not fetch latest repo: ${res.statusText}`));
@@ -367,22 +210,41 @@ export async function getLatestRepoId(): Promise<string> {
     return data.repo_id;
 }
 
-/**
- * Submit a GitHub repo for ingestion.
- */
+export async function getRepoStatus(repoId: string): Promise<RepoStatus> {
+    const res = await fetchWithTimeout(`${API_BASE}/repo/${repoId}`, {}, STATUS_REQUEST_TIMEOUT_MS, "Repo status check");
+    if (!res.ok) throw new Error(await readErrorDetail(res, `Repo status check failed: ${res.statusText}`));
+    const payload = await res.json();
+    return {
+        ...payload,
+        chunk_count: Number(payload?.chunk_count ?? 0),
+    };
+}
+
+export async function getRepoQuota(): Promise<RepoQuota> {
+    const res = await fetchWithTimeout(`${API_BASE}/repo/quota`, {}, STATUS_REQUEST_TIMEOUT_MS, "Repo quota check");
+    if (!res.ok) throw new Error(await readErrorDetail(res, `Repo quota check failed: ${res.statusText}`));
+    const payload = await res.json();
+    return {
+        limit: Number(payload?.limit ?? 3),
+        used: Number(payload?.used ?? 0),
+        remaining: Number(payload?.remaining ?? 0),
+        resets_in_hours: Number(payload?.resets_in_hours ?? 24),
+    };
+}
+
 export async function ingestRepo(githubUrl: string): Promise<IngestResponse> {
     const res = await fetchWithTimeout(`${API_BASE}/repo`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ github_url: githubUrl }),
     }, START_REQUEST_TIMEOUT_MS, "Ingest request");
-    if (!res.ok) throw new Error(await readErrorDetail(res, `Ingest failed: ${res.statusText}`));
+    if (!res.ok) {
+        const payload = await readErrorPayload(res);
+        throw new ApiError(getErrorMessage(payload, `Ingest failed: ${res.statusText}`), res.status, payload);
+    }
     return res.json();
 }
 
-/**
- * Poll repo status until ready or failed.
- */
 export async function pollRepoStatus(
     repoId: string,
     onStatus?: (status: RepoStatus) => void,
@@ -390,56 +252,68 @@ export async function pollRepoStatus(
     timeoutMs = 1_800_000
 ): Promise<RepoStatus> {
     const start = Date.now();
+    let consecutiveFailures = 0;
+    let lastFailure: Error | null = null;
 
     while (Date.now() - start < timeoutMs) {
-        const res = await fetchWithTimeout(`${API_BASE}/repo/${repoId}`, {}, STATUS_REQUEST_TIMEOUT_MS, "Status check");
-        if (!res.ok) throw new Error(await readErrorDetail(res, `Status check failed: ${res.statusText}`));
-        const status: RepoStatus = await res.json();
+        let status: RepoStatus;
+        try {
+            const res = await fetchWithTimeout(`${API_BASE}/repo/${repoId}`, {}, STATUS_REQUEST_TIMEOUT_MS, "Status check");
+            if (!res.ok) throw new Error(await readErrorDetail(res, `Status check failed: ${res.statusText}`));
+            const payload = await res.json();
+            status = {
+                ...payload,
+                chunk_count: Number(payload?.chunk_count ?? 0),
+            };
+            consecutiveFailures = 0;
+            lastFailure = null;
+        } catch (error) {
+            consecutiveFailures += 1;
+            lastFailure = error instanceof Error ? error : new Error("Status check failed");
+            if (consecutiveFailures >= 5) {
+                throw lastFailure;
+            }
+            await new Promise((resolve) => setTimeout(resolve, intervalMs));
+            continue;
+        }
 
         onStatus?.(status);
 
         if (status.status === "ready") return status;
         if (status.status === "failed") throw new Error(`Ingestion failed: ${status.error}`);
 
-        await new Promise((r) => setTimeout(r, intervalMs));
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
 
-    throw new Error(`Ingestion timed out after ${Math.round(timeoutMs / 60_000)} minutes`);
+    throw new Error(lastFailure?.message ?? `Ingestion timed out after ${Math.round(timeoutMs / 60_000)} minutes`);
 }
 
-/**
- * Fetch the cluster tree and adapt it to the frontend schema.
- */
 export async function fetchGraphData(repoId: string): Promise<GraphData> {
     const res = await fetchWithTimeout(`${API_BASE}/repo/${repoId}/graph`, {}, STATUS_REQUEST_TIMEOUT_MS, "Graph fetch");
     if (!res.ok) throw new Error(await readErrorDetail(res, `Graph fetch failed: ${res.statusText}`));
-    const tree: BackendTree = await res.json();
-    return adaptBackendTree(tree);
+    const tree: unknown = await res.json();
+    if (!isBackendTree(tree)) {
+        throw new Error("Graph response was not a valid backend tree.");
+    }
+    return tree;
 }
+
 export async function fetchLatestGraphData(): Promise<{ repoId: string; graphData: GraphData }> {
-    const res = await fetchWithTimeout(`${API_BASE}/repo/latest`, {}, STATUS_REQUEST_TIMEOUT_MS, "Latest graph fetch");
-    if (!res.ok) throw new Error(await readErrorDetail(res, "No ready repo found"));
-    const { repo_id } = await res.json();
-    const graphData = await fetchGraphData(repo_id);
-    return { repoId: repo_id, graphData };
+    const repoId = await getLatestRepoId();
+    const graphData = await fetchGraphData(repoId);
+    return { repoId, graphData };
 }
-/**
- * Full flow: ingest → poll → fetch graph.
- * Returns GraphData ready for the GraphViewer.
- */
+
 export async function ingestAndFetch(
     githubUrl: string,
     onStatus?: (status: RepoStatus) => void
 ): Promise<{ repoId: string; graphData: GraphData }> {
     const { repo_id } = await ingestRepo(githubUrl);
-    await pollRepoStatus(repo_id, onStatus, 5000, 1_200_000); // 20 min
+    await pollRepoStatus(repo_id, onStatus, 5000, 1_200_000);
     const graphData = await fetchGraphData(repo_id);
     return { repoId: repo_id, graphData };
 }
 
-/**
- * Query the RAG system about the repo.
- */
 export async function queryRepo(
     repoId: string,
     question: string,
@@ -455,9 +329,7 @@ export async function queryRepo(
 
     try {
         const body: { question: string; domain_id?: string } = { question };
-        if (domainId) {
-            body.domain_id = domainId;
-        }
+        if (domainId) body.domain_id = domainId;
 
         const res = await fetch(`${API_BASE}/repo/${repoId}/query`, {
             method: "POST",
@@ -502,9 +374,7 @@ export async function queryWorkflow(
 
     try {
         const body: { question: string; domain_id?: string } = { question };
-        if (domainId) {
-            body.domain_id = domainId;
-        }
+        if (domainId) body.domain_id = domainId;
 
         const res = await fetch(`${API_BASE}/repo/${repoId}/workflow`, {
             method: "POST",
@@ -533,6 +403,7 @@ export async function queryWorkflow(
         options?.signal?.removeEventListener("abort", abortFromCaller);
     }
 }
+
 export async function checkRepoReady(repoId: string): Promise<boolean> {
     const res = await fetchWithTimeout(`${API_BASE}/repo/${repoId}`, {}, STATUS_REQUEST_TIMEOUT_MS, "Repo readiness check");
     if (!res.ok) throw new Error(await readErrorDetail(res, `Repo readiness check failed: ${res.statusText}`));

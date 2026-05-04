@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 
@@ -51,6 +52,14 @@ _gemini = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 GEMINI_MODEL = "gemini-2.5-flash-lite"
 GEMINI_TIMEOUT_SECONDS = 45
+FAST_CLUSTER_LABELS = os.getenv("FAST_CLUSTER_LABELS", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+CLUSTER_TREE_SCHEMA_VERSION = 2
+MAX_CHILDREN_PER_CLUSTER = 15
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +78,43 @@ def _infer_thresholds(files: list[dict]) -> tuple[float, int]:
     else:
         return 0.4, 3    # default
 
+LANGUAGE_FAMILIES = {
+    # Config / build tooling — should cluster together
+    'json': 'config',
+    'toml': 'config',
+    'yaml': 'config',
+    'yml': 'config',
+    'lock': 'config',
+    # Docs
+    'md': 'docs',
+    'txt': 'docs',
+    'rst': 'docs',
+    # Python application logic
+    'py': 'python',
+    # TypeScript / JavaScript (auth, proxy, next config etc.)
+    'ts': 'typescript',
+    'js': 'javascript',
+    'tsx': 'typescript',
+    'jsx': 'javascript',
+}
+
+
+def _split_root_group(files: list[dict]) -> dict[str, list[dict]]:
+    """
+    Split root-level files by language family so HAC doesn't mix
+    application logic (Backend.py) with build config (package.json).
+    Returns a dict of sub-group-key → file list.
+    Groups with only one file stay as singletons — they will become
+    leaf children of root, which is correct.
+    """
+    sub_groups: dict[str, list[dict]] = {}
+    for f in files:
+        ext = f['file_path'].rsplit('.', 1)[-1].lower() if '.' in f['file_path'] else 'unknown'
+        family = LANGUAGE_FAMILIES.get(ext, f'other_{ext}')
+        sub_groups.setdefault(family, []).append(f)
+    return sub_groups
+
+
 def _group_by_path(files: list[dict]) -> list[list[dict]]:
     """Group files by top-level directory. Root-level files share one group."""
     groups: dict[str, list[dict]] = {}
@@ -81,7 +127,141 @@ def _group_by_path(files: list[dict]) -> list[list[dict]]:
         else:
             key = f"{parts[0]}/{parts[1]}"
         groups.setdefault(key, []).append(f)
-    return list(groups.values())
+
+    # Split the root-level bucket by language family so application logic
+    # files (Backend.py) don't cluster with build config files (package.json).
+    result: list[list[dict]] = []
+    for key, file_list in groups.items():
+        if key == "__root__":
+            for sub_list in _split_root_group(file_list).values():
+                result.append(sub_list)
+        else:
+            result.append(file_list)
+
+    # Merge singleton groups into related groups when they share a semantic
+    # relationship identifiable by path prefix. Specifically: any group with
+    # exactly one file whose path starts with "types/" should merge into the
+    # typescript root sub-group if one exists, since type declaration files
+    # belong with their corresponding runtime files.
+    def _is_root_typescript_group(g: list[dict]) -> bool:
+        if len(g) <= 1:
+            return False
+        all_root = all('/' not in f['file_path'].replace('\\', '/') for f in g)
+        any_ts = any(f['file_path'].endswith(('.ts', '.tsx')) for f in g)
+        return all_root and any_ts
+
+    typescript_group_idx = next(
+        (i for i, g in enumerate(result) if _is_root_typescript_group(g)),
+        None,
+    )
+    # Note: only merge if the typescript group exists and has multiple files —
+    # don't merge into another singleton.
+    types_singletons = [
+        f
+        for g in result
+        for f in g
+        if len(g) == 1 and f['file_path'].replace('\\', '/').startswith('types/')
+    ]
+    if typescript_group_idx is not None and types_singletons:
+        result[typescript_group_idx].extend(types_singletons)
+        result = [
+            g for g in result
+            if not (len(g) == 1 and g[0]['file_path'].replace('\\', '/').startswith('types/'))
+        ]
+    return result
+
+
+def _file_sort_key(file: dict) -> str:
+    return file["file_path"].replace("\\", "/").lower()
+
+
+def _group_sort_key(group: list[dict]) -> str:
+    if not group:
+        return ""
+    return min(_file_sort_key(f) for f in group)
+
+
+def _group_centroid(group: list[dict]) -> list[float] | None:
+    vectors = [f["summary_vector"] for f in group if f.get("summary_vector") is not None]
+    if not vectors:
+        return None
+    arr = np.array(vectors, dtype=np.float32)
+    return arr.mean(axis=0).tolist()
+
+
+def _limit_group_count(
+        groups: list[list[dict]],
+        max_children: int = MAX_CHILDREN_PER_CLUSTER,
+) -> list[list[dict]]:
+    """
+    Merge generated groups so a cluster never has more than max_children direct children.
+    Uses semantic centroids when available, with a deterministic path fallback.
+    """
+    groups = [sorted(group, key=_file_sort_key) for group in groups if group]
+    if len(groups) <= max_children:
+        return sorted(groups, key=_group_sort_key)
+
+    centroids = [_group_centroid(group) for group in groups]
+    if all(centroid is not None for centroid in centroids):
+        vectors = normalize(np.array(centroids, dtype=np.float32))
+        model = AgglomerativeClustering(
+            n_clusters=max_children,
+            metric="euclidean",
+            linkage="average",
+        )
+        labels = model.fit_predict(vectors)
+
+        merged: dict[int, list[dict]] = {}
+        for group, label in zip(groups, labels):
+            merged.setdefault(int(label), []).extend(group)
+
+        limited = [sorted(group, key=_file_sort_key) for group in merged.values()]
+        return sorted(limited, key=_group_sort_key)
+
+    sorted_groups = sorted(groups, key=_group_sort_key)
+    chunk_size = max(1, math.ceil(len(sorted_groups) / max_children))
+    limited = [
+        sorted(
+            [file for group in sorted_groups[i:i + chunk_size] for file in group],
+            key=_file_sort_key,
+        )
+        for i in range(0, len(sorted_groups), chunk_size)
+    ]
+    return sorted(limited, key=_group_sort_key)
+
+
+def _validate_tree_limits(
+        node: dict,
+        max_children: int = MAX_CHILDREN_PER_CLUSTER,
+        path: str = "root",
+) -> list[str]:
+    """Return validation errors for composite-tree display invariants."""
+    errors: list[str] = []
+    if node.get("type") == "cluster":
+        children = node.get("children", [])
+        if len(children) > max_children:
+            errors.append(
+                f"{path} ({node.get('label', 'unlabeled')}) has {len(children)} children; max is {max_children}"
+            )
+        for index, child in enumerate(children):
+            label = child.get("label") or f"child-{index}"
+            errors.extend(_validate_tree_limits(child, max_children, f"{path}/{label}"))
+    return errors
+
+
+def _dedupe_sibling_labels(children: list[dict]) -> None:
+    """
+    Ensure direct siblings have unique labels before parent edges are generated.
+    Label collisions are valid natural-language output from Gemini, but the graph
+    UI and parent edge prompts need direct-child labels to be distinguishable.
+    """
+    seen: dict[str, int] = {}
+    for child in children:
+        base_label = str(child.get("label") or child.get("file_path") or child.get("type") or "Untitled").strip()
+        if not base_label:
+            base_label = "Untitled"
+        seen[base_label] = seen.get(base_label, 0) + 1
+        child["label"] = base_label if seen[base_label] == 1 else f"{base_label} {seen[base_label]}"
 # ---------------------------------------------------------------------------
 # Clustering defaults (used only as fallback defaults in signatures)
 # ---------------------------------------------------------------------------
@@ -128,6 +308,12 @@ Summary: {summary}
 
 Extract the internal logical components of this file and how they interact.
 Do NOT reference external files or systems — only what exists within this file.
+
+The "label" field must be the file's architectural role in the codebase
+(e.g. "Flashcard Generator", "Authentication Logic", "Card State Manager").
+Do NOT name the label after an internal function or component inside the file.
+The label is used as a navigation target in a graph UI — it must be meaningful
+to someone looking at the codebase from the outside.
 
 Return ONLY valid JSON with no preamble or markdown. Schema:
 {{
@@ -307,6 +493,27 @@ def _fallback_cluster_summary(files: list[dict]) -> str:
 
 async def _build_leaf(file: dict) -> dict:
     """Build a leaf Quanta node for a single file."""
+    if FAST_CLUSTER_LABELS:
+        label = _fallback_leaf_label(file)
+        summary = file.get("summary") or "Summary unavailable."
+        return {
+            "type": "leaf",
+            "label": label,
+            "summary": summary,
+            "file_path": file["file_path"],
+            "language": file.get("language"),
+            "file_type": file.get("file_type"),
+            "nodes": [
+                {
+                    "id": "file_overview",
+                    "label": "File Overview",
+                    "responsibility": summary,
+                }
+            ],
+            "edges": [],
+            "children": [],
+        }
+
     prompt = _LEAF_PROMPT.format(
         file_path=file["file_path"],
         language=file.get("language") or "unknown",
@@ -356,21 +563,34 @@ async def _build_cluster(
                     for i in range(0, len(files), max_group_size)
                 ]
 
+        groups = _limit_group_count(groups)
+
         children = list(await asyncio.gather(*[
             _build_cluster(group, depth + 1, distance_threshold, max_leaf_files, max_group_size)
             for group in groups
         ]))
+
+    if len(children) > MAX_CHILDREN_PER_CLUSTER:
+        raise ValueError(
+            f"cluster build produced {len(children)} direct children at depth {depth}; "
+            f"max is {MAX_CHILDREN_PER_CLUSTER}"
+        )
+
+    _dedupe_sibling_labels(children)
 
     child_labels    = [c["label"] for c in children]
     child_summaries = "\n".join(
         f"- {c['label']}: {c.get('summary', '')}" for c in children
     )
 
-    prompt = _CLUSTER_LABEL_PROMPT.format(
-        summaries=child_summaries,
-        child_labels=", ".join(child_labels),
-    )
-    gemini_data = await _call_gemini(prompt)
+    if FAST_CLUSTER_LABELS:
+        gemini_data = {}
+    else:
+        prompt = _CLUSTER_LABEL_PROMPT.format(
+            summaries=child_summaries,
+            child_labels=", ".join(child_labels),
+        )
+        gemini_data = await _call_gemini(prompt)
 
     return {
         "type": "cluster",
@@ -413,6 +633,9 @@ async def build_cluster_tree(
         groups = _cluster_files(files, distance_threshold, max_group_size=_DEFAULT_MAX_GROUP_SIZE)
         logger.info("HAC grouping: %d top-level groups", len(groups))
 
+    groups = _limit_group_count(groups)
+    logger.info("top-level groups after child-limit pass: %d", len(groups))
+
     if len(groups) == 1:
         root = await _build_cluster(
             files,
@@ -431,15 +654,20 @@ async def build_cluster_tree(
             for group in groups
         ]))
 
+        _dedupe_sibling_labels(children)
+
         child_labels    = [c["label"] for c in children]
         child_summaries = "\n".join(
             f"- {c['label']}: {c.get('summary', '')}" for c in children
         )
-        prompt = _CLUSTER_LABEL_PROMPT.format(
-            summaries=child_summaries,
-            child_labels=", ".join(child_labels),
-        )
-        gemini_data = await _call_gemini(prompt)
+        if FAST_CLUSTER_LABELS:
+            gemini_data = {}
+        else:
+            prompt = _CLUSTER_LABEL_PROMPT.format(
+                summaries=child_summaries,
+                child_labels=", ".join(child_labels),
+            )
+            gemini_data = await _call_gemini(prompt)
 
         root = {
             "type": "cluster",
@@ -448,6 +676,13 @@ async def build_cluster_tree(
             "edges": gemini_data.get("edges", []),
             "children": children,
         }
+
+    root["schema_version"] = CLUSTER_TREE_SCHEMA_VERSION
+    root["max_children_per_cluster"] = MAX_CHILDREN_PER_CLUSTER
+
+    limit_errors = _validate_tree_limits(root)
+    if limit_errors:
+        raise ValueError("cluster tree child limit validation failed: " + "; ".join(limit_errors[:5]))
 
     logger.info("cluster tree built — root label: %s", root.get("label"))
     return root
