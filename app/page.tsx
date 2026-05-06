@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useEffectEvent, useState } from "react";
+import { useEffect, useEffectEvent, useState, type SVGProps } from "react";
 import { useRouter } from "next/navigation";
 import { IngestionProgress } from "@/components/GraphViewer/IngestionProgress";
 import { ApiError, getRepoQuota, ingestRepo, pollRepoStatus, type RepoQuota } from "@/components/GraphViewer/adapter";
@@ -53,11 +53,48 @@ const learners = [
   "Teams documenting domain boundaries",
 ];
 
+const projectLinks = [
+  {
+    name: "GitHub",
+    href: "https://github.com/cheikhwade07/ChizuCode",
+    Icon: GithubLogo,
+  },
+  {
+    name: "Devpost",
+    href: "https://devpost.com/software/chizucode",
+    Icon: DevpostLogo,
+  },
+];
+
 type IngestPhase =
     | { kind: "idle" }
     | { kind: "submitting" }
     | { kind: "polling"; repoId: string; chunkCount: number }
     | { kind: "error"; message: string; status?: number };
+
+function GithubLogo(props: SVGProps<SVGSVGElement>) {
+  return (
+      <svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor" {...props}>
+        <path
+            fillRule="evenodd"
+            clipRule="evenodd"
+            d="M12 0.75C5.79 0.75 0.75 5.79 0.75 12c0 4.97 3.22 9.18 7.69 10.67 0.56 0.1 0.77-0.24 0.77-0.54 0-0.27-0.01-1.15-0.02-2.09-3.13 0.68-3.79-1.33-3.79-1.33-0.51-1.3-1.25-1.65-1.25-1.65-1.02-0.7 0.08-0.69 0.08-0.69 1.13 0.08 1.72 1.16 1.72 1.16 1 1.72 2.63 1.22 3.27 0.94 0.1-0.73 0.39-1.22 0.71-1.5-2.5-0.28-5.13-1.25-5.13-5.56 0-1.23 0.44-2.23 1.16-3.02-0.12-0.28-0.5-1.43 0.11-2.98 0 0 0.94-0.3 3.09 1.15A10.74 10.74 0 0 1 12 6.18c0.95 0 1.91 0.13 2.81 0.38 2.14-1.45 3.08-1.15 3.08-1.15 0.61 1.55 0.23 2.7 0.11 2.98 0.72 0.79 1.16 1.79 1.16 3.02 0 4.32-2.64 5.27-5.15 5.55 0.4 0.35 0.76 1.03 0.76 2.08 0 1.5-0.01 2.71-0.01 3.08 0 0.3 0.2 0.65 0.78 0.54A11.26 11.26 0 0 0 23.25 12C23.25 5.79 18.21 0.75 12 0.75Z"
+        />
+      </svg>
+  );
+}
+
+function DevpostLogo(props: SVGProps<SVGSVGElement>) {
+  return (
+      <svg viewBox="0 0 24 24" aria-hidden="true" {...props}>
+        <rect x="3" y="3" width="18" height="18" rx="3.5" fill="currentColor" />
+        <path
+            d="M8 7h4.25C15.12 7 17 9.02 17 12s-1.88 5-4.75 5H8V7Zm2.55 2.35v5.3h1.54c1.43 0 2.35-1.04 2.35-2.65s-0.92-2.65-2.35-2.65H10.55Z"
+            fill="#F3EEEA"
+        />
+      </svg>
+  );
+}
 
 export default function Home() {
   const router = useRouter();
@@ -190,9 +227,22 @@ export default function Home() {
               Codebase Teaching Assistant
             </span>
             </div>
-            <span className="rounded-full border border-[#B0A695] bg-[#DDD4C7] px-4 py-2 text-sm font-medium text-[#221d18] shadow-[6px_6px_0_#000]">
-            Teaching Assistant for Repos
-          </span>
+            <nav className="flex items-center gap-3" aria-label="Project links">
+              {projectLinks.map(({ name, href, Icon }) => (
+                  <a
+                      key={name}
+                      href={href}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label={`${name} project page`}
+                      title={name}
+                      className="inline-flex h-12 items-center gap-2 rounded-full border border-[#B0A695] bg-[#DDD4C7] px-4 text-sm font-semibold text-[#221d18] shadow-[6px_6px_0_#000] transition-transform hover:-translate-y-0.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#433b33]"
+                  >
+                    <Icon className="h-5 w-5 shrink-0" />
+                    <span className="hidden sm:inline">{name}</span>
+                  </a>
+              ))}
+            </nav>
           </div>
         </header>
 
@@ -281,8 +331,18 @@ export default function Home() {
           {/* Overview cards */}
           <section
               id="overview-cards"
-              className="scroll-mt-52 grid gap-8 pt-28 pb-20 lg:grid-cols-3"
+              className="scroll-mt-52 grid gap-8 pt-28 pb-20 lg:grid-cols-2 xl:grid-cols-4"
           >
+            <div className="overflow-hidden rounded-[1.8rem] border-[2px] border-[#B0A695] bg-[#F3EEEA] shadow-[8px_8px_0_#000]">
+              <div className="bg-[#EBE3D5] px-5 py-4 font-mono text-[1.75rem] text-[#433b33]">
+                About
+              </div>
+              <div className="p-6 pt-5 space-y-3 text-lg text-[#776B5D]">
+                <p>ChizuCode turns repositories into guided maps for learning unfamiliar codebases.</p>
+                <p>Winner of Best Use of Gemini API at ConHack 2026.</p>
+              </div>
+            </div>
+
             <div className="overflow-hidden rounded-[1.8rem] border-[2px] border-[#B0A695] bg-[#F3EEEA] shadow-[8px_8px_0_#000]">
               <div className="bg-[#EBE3D5] px-5 py-4 font-mono text-[1.75rem] text-[#433b33]">
                 Who it helps
@@ -391,6 +451,25 @@ export default function Home() {
               ))}
             </div>
           </section>
+
+          <footer className="mt-16 border-t border-[#B0A695] pt-8 text-sm leading-6 text-[#776B5D]">
+            <p>Copyright (c) 2026 ChizuCode contributors.</p>
+            <p className="mt-1">
+              Team: Naseer Rehman, Seydi Cheikh Wade, Tri An, Tin Mainiawklang.
+            </p>
+            <p className="mt-1">
+              Licensed under the{" "}
+              <a
+                  href="https://github.com/cheikhwade07/ChizuCode/blob/main/LICENSE"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-semibold text-[#433b33] underline underline-offset-4"
+              >
+                MIT License
+              </a>
+              .
+            </p>
+          </footer>
         </div>
       </main>
   );

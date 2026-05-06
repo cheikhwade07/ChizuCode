@@ -239,3 +239,16 @@ Use `--reset` only when intentionally wiping app tables.
 ## Status
 
 ChizuCode currently supports repository ingestion, graph generation, scoped RAG answers, and workflow animation payloads. The system is designed for fast demos once a repo has already been ingested and cached in the database.
+
+## Team
+
+- Naseer Rehman
+- Seydi Cheikh Wade
+- Tri An
+- Tin Mainiawklang
+
+## License
+
+MIT License. See [LICENSE](LICENSE).
+
+Copyright (c) 2026 ChizuCode contributors.
